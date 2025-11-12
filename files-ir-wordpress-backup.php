@@ -3,7 +3,7 @@
  * Plugin Name: Files.ir Wordpress Backup
  * Plugin URI: https://github.com/SaeedFard
  * Description: پایگاه‌داده + فایل‌های مهم وردپرس را زمان‌بندی‌شده خروجی می‌گیرد و به Files.ir آپلود می‌کند.
- * Version: 1.0.9
+ * Version: 1.1.2
  * Author: Saeed Fard
  * Author URI: https://github.com/SaeedFard
  * License: GPLv2 or later
@@ -78,22 +78,33 @@ class FDU_Plugin {
 
     private function next_scheduled_timestamp($opts) {
         $tz = wp_timezone();
-        $now_ts = current_time('timestamp');
         $now = new DateTimeImmutable('now', $tz);
         $hour = isset($opts['hour']) ? intval($opts['hour']) : 3;
         $min  = isset($opts['minute']) ? intval($opts['minute']) : 0;
         $freq = isset($opts['frequency']) ? $opts['frequency'] : 'daily';
 
         if ($freq === 'weekly') {
-            $wday = isset($opts['weekday']) ? intval($opts['weekday']) : 1; // 0 Sun .. 6 Sat
+            $wday = isset($opts['weekday']) ? intval($opts['weekday']) : 6; // پیش‌فرض: شنبه
             $today_w = intval($now->format('w'));
             $days_ahead = ($wday - $today_w + 7) % 7;
             $target = $now->setTime($hour, $min, 0);
-            if ($days_ahead === 0 && $target->getTimestamp() <= $now_ts) $days_ahead = 7;
-            return $target->modify('+'.$days_ahead.' days')->getTimestamp();
+            
+            // Debug log
+            $this->log('DEBUG: now='.$now->format('Y-m-d H:i:s').' (w='.$today_w.') | target='.$target->format('Y-m-d H:i:s').' | wday='.$wday.' | days_ahead='.$days_ahead);
+            
+            // مقایسه صحیح با همون timezone
+            if ($days_ahead === 0 && $target <= $now) {
+                $days_ahead = 7;
+                $this->log('DEBUG: زمان گذشته است، +7 روز اضافه شد');
+            }
+            
+            $final = $target->modify('+'.$days_ahead.' days');
+            $this->log('DEBUG: final='.$final->format('Y-m-d H:i:s (l)'));
+            
+            return $final->getTimestamp();
         } else {
             $target = $now->setTime($hour, $min, 0);
-            if ($target->getTimestamp() <= $now_ts) $target = $target->modify('+1 day');
+            if ($target <= $now) $target = $target->modify('+1 day');
             return $target->getTimestamp();
         }
     }
@@ -136,7 +147,7 @@ class FDU_Plugin {
 
             // Schedule
             'frequency'           => 'daily',
-            'weekday'             => 1,
+            'weekday'             => 6, // شنبه (پیش‌فرض هفته ایرانی)
             'hour'                => 3,
             'minute'              => 0,
             'email'               => '',
@@ -200,7 +211,7 @@ class FDU_Plugin {
             ['exclude_patterns','الگوهای حذف (* و ? مجاز)','textarea'],
 
             ['frequency','تناوب اجرا','select',['daily'=>'روزانه','weekly'=>'هفتگی']],
-            ['weekday','روز اجرای هفتگی','select',['0'=>'یکشنبه','1'=>'دوشنبه','2'=>'سه‌شنبه','3'=>'چهارشنبه','4'=>'پنجشنبه','5'=>'جمعه','6'=>'شنبه']],
+            ['weekday','روز اجرای هفتگی','select',['6'=>'شنبه','0'=>'یکشنبه','1'=>'دوشنبه','2'=>'سه‌شنبه','3'=>'چهارشنبه','4'=>'پنجشنبه','5'=>'جمعه']],
             ['hour','ساعت اجرا','number'],
             ['minute','دقیقه اجرا','number'],
             ['email','ایمیل اعلان (اختیاری)','text'],
@@ -273,7 +284,7 @@ class FDU_Plugin {
         $worker_url = add_query_arg(['action'=>'fdu_worker','key'=>$opts['bg_key']], admin_url('admin-post.php'));
         ?>
         <div class="wrap">
-            <h1>Files.ir Wordpress Backup <small style="opacity:.6">v1.0.9 - اصلاح نمایش زمان async</small></h1>
+            <h1>Files.ir Wordpress Backup <small style="opacity:.6">v1.1.2 - اصلاح باگ timezone در زمان‌بندی</small></h1>
             <form method="post" action="options.php">
                 <?php settings_fields('fdu_settings_group'); do_settings_sections($this->admin_page_slug); submit_button(); ?>
             </form>
