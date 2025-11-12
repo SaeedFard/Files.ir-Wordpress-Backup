@@ -3,7 +3,7 @@
  * Plugin Name: Files.ir Wordpress Backup
  * Plugin URI: https://github.com/SaeedFard
  * Description: پایگاه‌داده + فایل‌های مهم وردپرس را زمان‌بندی‌شده خروجی می‌گیرد و به Files.ir آپلود می‌کند.
- * Version: 1.0.2
+ * Version: 1.0.9
  * Author: Saeed Fard
  * Author URI: https://github.com/SaeedFard
  * License: GPLv2 or later
@@ -107,7 +107,10 @@ class FDU_Plugin {
         return $old;
     }
     public static function logs_path() { return trailingslashit(self::uploads_dir()).'logs.txt'; }
-    public function log($msg) { @file_put_contents(self::logs_path(), '['.wp_date('Y-m-d H:i:s').'] '.$msg.PHP_EOL, FILE_APPEND); }
+    public function log($msg) { 
+        $time = current_time('Y-m-d H:i:s'); // از timezone وردپرس استفاده می‌کنه
+        @file_put_contents(self::logs_path(), '['.$time.'] '.$msg.PHP_EOL, FILE_APPEND); 
+    }
 
     public function get_options() {
         $defaults = [
@@ -142,6 +145,10 @@ class FDU_Plugin {
             // Compatibility
             'compat_mode'         => 1,
             'force_manual_multipart'=> 1,
+
+            // Chunked upload
+            'chunk_size_mb'       => 5,
+            'upload_method'       => 'stream', // chunk | stream
 
             // Worker secret
             'bg_key'              => '',
@@ -179,6 +186,8 @@ class FDU_Plugin {
             ['multipart_field','نام فیلد فایل (Multipart)','text'],
             ['dest_relative_path','پوشهٔ مقصد در Files (relativePath)','text'],
             ['extra_fields','فیلدهای اضافه (JSON)','textarea'],
+            ['chunk_size_mb','اندازه هر قطعه آپلود (MB) - برای فایل‌های بزرگ‌تر از 50MB','number'],
+            ['upload_method','روش آپلود فایل‌های بزرگ','select',['stream'=>'Stream (توصیه می‌شود)','chunk'=>'Chunked (نیاز به پشتیبانی سرور)']],
 
             ['keep_local','نگه‌داشتن کپی محلی','checkbox'],
             ['retention','تعداد نسخه‌های محلی','number'],
@@ -264,7 +273,7 @@ class FDU_Plugin {
         $worker_url = add_query_arg(['action'=>'fdu_worker','key'=>$opts['bg_key']], admin_url('admin-post.php'));
         ?>
         <div class="wrap">
-            <h1>Files.ir Wordpress Backup <small style="opacity:.6">v1.0.2</small></h1>
+            <h1>Files.ir Wordpress Backup <small style="opacity:.6">v1.0.9 - اصلاح نمایش زمان async</small></h1>
             <form method="post" action="options.php">
                 <?php settings_fields('fdu_settings_group'); do_settings_sections($this->admin_page_slug); submit_button(); ?>
             </form>
@@ -329,9 +338,11 @@ class FDU_Plugin {
     // Async via WP-Cron
     public function handle_run_async() {
         if (!current_user_can('manage_options') || !check_admin_referer('fdu_run_async')) wp_die('forbidden');
-        $ts = time() + 5;
+        $ts = time() + 5; // UTC timestamp
         wp_schedule_single_event($ts, self::ASYNC_HOOK);
-        $this->log('Background run scheduled for '. wp_date('Y-m-d H:i:s', $ts) .' (local) | UTC: '. gmdate('Y-m-d H:i:s', $ts));
+        // نمایش درست زمان: تبدیل UTC به timezone وردپرس
+        $local_time = get_date_from_gmt(gmdate('Y-m-d H:i:s', $ts), 'Y-m-d H:i:s');
+        $this->log('Background run scheduled for '. $local_time .' (local) | UTC: '. gmdate('Y-m-d H:i:s', $ts));
         if (!function_exists('spawn_cron')) require_once ABSPATH.'wp-includes/cron.php';
         @spawn_cron();
         wp_remote_get( site_url('wp-cron.php?doing_wp_cron='.microtime(true)), ['timeout'=>0.01, 'blocking'=>false] );
@@ -387,8 +398,10 @@ class FDU_Plugin {
 
     public function handle_single_test() {
         if (!current_user_can('manage_options') || !check_admin_referer('fdu_health')) wp_die('forbidden');
-        $ts = time() + 120; wp_schedule_single_event($ts,'fdu_single_test_event');
-        $this->log('Scheduled single test for '. wp_date('Y-m-d H:i:s', $ts) );
+        $ts = time() + 120; 
+        wp_schedule_single_event($ts,'fdu_single_test_event');
+        $local_time = get_date_from_gmt(gmdate('Y-m-d H:i:s', $ts), 'Y-m-d H:i:s');
+        $this->log('Scheduled single test for '. $local_time .' (local)');
         if (!function_exists('spawn_cron')) require_once ABSPATH.'wp-includes/cron.php';
         @spawn_cron();
         wp_remote_get( site_url('wp-cron.php?doing_wp_cron='.microtime(true)), ['timeout'=>0.01, 'blocking'=>false] );
@@ -427,11 +440,25 @@ class FDU_Plugin {
 
         // 2) Files (optional)
         if (intval($opts['enable_files_backup']) === 1) {
+            $this->log('شروع بکاپ فایل‌ها...');
             $arch = $this->export_files_archive();
             if ($arch) {
+                $this->log('آرشیو فایل‌ها ساخته شد: '.$arch.' - اندازه: '.number_format(filesize($arch)/1048576,2).'MB');
                 $okf = $this->upload_file($arch, $opts, ['type'=>$this->mime_for($arch)]);
+                if ($okf) {
+                    $this->log('✅ آرشیو فایل‌ها با موفقیت آپلود شد.');
+                } else {
+                    $this->log('❌ خطا در آپلود آرشیو فایل‌ها.');
+                }
                 $ok_all = $ok_all && $okf;
-            } else { $ok_all = false; }
+                // پاک کردن آرشیو بعد از آپلود اگر keep_local غیرفعال باشه
+                if (!$opts['keep_local']) @unlink($arch);
+            } else { 
+                $this->log('❌ خطا در ساخت آرشیو فایل‌ها. آرشیو ایجاد نشد.');
+                $ok_all = false; 
+            }
+        } else {
+            $this->log('بکاپ فایل‌ها غیرفعال است (enable_files_backup=0)');
         }
 
         // Retention
@@ -545,38 +572,66 @@ class FDU_Plugin {
         $fmt  = ($opts['archive_format']==='tar.gz') ? 'tar.gz' : 'zip';
         $out  = $dir.'/files-'.$date.'.files.'.$fmt;
 
+        $this->log('شروع ساخت آرشیو فایل‌ها - فرمت: '.$fmt);
+
         $include_paths = array_filter(array_map('trim', preg_split('/[\r\n]+/', (string)$opts['include_paths'])));
         if (intval($opts['include_wp_config'])===1) $include_paths[] = 'wp-config.php';
         if (intval($opts['include_htaccess'])===1)  $include_paths[] = '.htaccess';
-        if (empty($include_paths)) { $this->log('هیچ مسیری برای بکاپ فایل‌ها انتخاب نشده.'); return false; }
+        
+        if (empty($include_paths)) { 
+            $this->log('❌ هیچ مسیری برای بکاپ فایل‌ها انتخاب نشده.'); 
+            return false; 
+        }
+        
+        $this->log('مسیرهای انتخاب شده برای بکاپ: '.implode(', ', $include_paths));
 
         $exclude = array_filter(array_map('trim', preg_split('/[\r\n,]+/', (string)$opts['exclude_patterns'])));
+        $this->log('الگوهای حذف: '.(empty($exclude)?'ندارد':implode(', ', array_slice($exclude,0,5)).'...'));
 
         if ($fmt==='zip') {
-            if (!class_exists('ZipArchive')) { $this->log('ZipArchive در دسترس نیست.'); return false; }
+            if (!class_exists('ZipArchive')) { 
+                $this->log('❌ ZipArchive در دسترس نیست.'); 
+                return false; 
+            }
+            $this->log('استفاده از ZipArchive برای ساخت آرشیو...');
             $zip = new ZipArchive();
-            if ($zip->open($out, ZipArchive::CREATE|ZipArchive::OVERWRITE)!==true) { $this->log('باز کردن ZIP ناموفق: '.$out); return false; }
+            if ($zip->open($out, ZipArchive::CREATE|ZipArchive::OVERWRITE)!==true) { 
+                $this->log('❌ باز کردن ZIP ناموفق: '.$out); 
+                return false; 
+            }
             $added=0; $total=0;
-            foreach ($include_paths as $rel) $added += $this->zip_add_path($zip, $rel, $exclude, $total);
+            foreach ($include_paths as $rel) {
+                $this->log('در حال اضافه کردن مسیر: '.$rel);
+                $added += $this->zip_add_path($zip, $rel, $exclude, $total);
+            }
             $zip->close();
-            $this->log("آرشیو ZIP ساخته شد: $out (فایل‌ها: $added / اسکن: $total)");
+            $this->log("✅ آرشیو ZIP ساخته شد: $out (فایل‌ها: $added / اسکن: $total)");
             return $out;
         } else {
             if (!class_exists('PharData') || ini_get('phar.readonly')) {
-                $this->log('PharData در دسترس نیست یا phar.readonly فعال است. سوئیچ خودکار به ZIP.');
+                $this->log('⚠️ PharData در دسترس نیست یا phar.readonly فعال است. سوئیچ خودکار به ZIP.');
                 $this->update_setting('archive_format','zip');
                 return $this->export_files_archive_zip_fallback($dir,$date,$include_paths,$exclude);
             }
             $tar = $dir.'/files-'.$date.'.files.tar';
             try {
+                $this->log('استفاده از PharData برای ساخت TAR.GZ...');
                 if (file_exists($tar)) @unlink($tar);
                 $ph = new PharData($tar);
                 $added=0; $total=0;
-                foreach ($include_paths as $rel) $added += $this->tar_add_path($ph, $rel, $exclude, $total);
-                $ph->compress(Phar::GZ); unset($ph); @unlink($tar);
-                $this->log("آرشیو TAR.GZ ساخته شد: $dir/files-$date.files.tar.gz (فایل‌ها: $added / اسکن: $total)");
+                foreach ($include_paths as $rel) {
+                    $this->log('در حال اضافه کردن مسیر: '.$rel);
+                    $added += $this->tar_add_path($ph, $rel, $exclude, $total);
+                }
+                $ph->compress(Phar::GZ); 
+                unset($ph); 
+                @unlink($tar);
+                $this->log("✅ آرشیو TAR.GZ ساخته شد: $dir/files-$date.files.tar.gz (فایل‌ها: $added / اسکن: $total)");
                 return "$dir/files-$date.files.tar.gz";
-            } catch (Exception $e) { $this->log('خطای TAR.GZ: '.$e->getMessage().'. سوئیچ خودکار به ZIP.'); return $this->export_files_archive_zip_fallback($dir,$date,$include_paths,$exclude); }
+            } catch (Exception $e) { 
+                $this->log('❌ خطای TAR.GZ: '.$e->getMessage().'. سوئیچ خودکار به ZIP.'); 
+                return $this->export_files_archive_zip_fallback($dir,$date,$include_paths,$exclude); 
+            }
         }
     }
 
@@ -587,18 +642,34 @@ class FDU_Plugin {
     }
 
     private function export_files_archive_zip_fallback($dir,$date,$include_paths,$exclude){
-        if (!class_exists('ZipArchive')) { $this->log('ZipArchive هم در دسترس نیست.'); return false; }
+        if (!class_exists('ZipArchive')) { 
+            $this->log('❌ ZipArchive هم در دسترس نیست.'); 
+            return false; 
+        }
+        $this->log('استفاده از ZIP به عنوان fallback...');
         $out = $dir.'/files-'.$date.'.files.zip';
         $zip = new ZipArchive();
-        if ($zip->open($out, ZipArchive::CREATE|ZipArchive::OVERWRITE)!==true) { $this->log('باز کردن ZIP ناموفق: '.$out); return false; }
+        if ($zip->open($out, ZipArchive::CREATE|ZipArchive::OVERWRITE)!==true) { 
+            $this->log('❌ باز کردن ZIP ناموفق: '.$out); 
+            return false; 
+        }
         $added=0; $total=0;
-        foreach ($include_paths as $rel) $added += $this->zip_add_path($zip, $rel, $exclude, $total);
+        foreach ($include_paths as $rel) {
+            $this->log('در حال اضافه کردن مسیر: '.$rel);
+            $added += $this->zip_add_path($zip, $rel, $exclude, $total);
+        }
         $zip->close();
-        $this->log("آرشیو ZIP (fallback) ساخته شد: $out (فایل‌ها: $added / اسکن: $total)");
+        $this->log("✅ آرشیو ZIP (fallback) ساخته شد: $out (فایل‌ها: $added / اسکن: $total)");
         return $out;
     }
 
-    private function normalize_rel($rel){ $rel=ltrim($rel,'/\\'); $rel=str_replace(['..','./','.\\'],'',''); return $rel; }
+    private function normalize_rel($rel){ 
+        $rel = ltrim($rel,'/\\');
+        // فقط .. را حذف کن (برای امنیت) ولی ./ و .\ را فقط در ابتدای مسیر حذف کن
+        $rel = str_replace('..', '', $rel);
+        $rel = preg_replace('~^\.[\\/\\\\]~', '', $rel); // حذف ./ یا .\ از ابتدای مسیر
+        return $rel; 
+    }
 
     private function is_excluded($relPath, $patterns) {
         $relPath = str_replace('\\','/',$relPath);
@@ -617,21 +688,57 @@ class FDU_Plugin {
         $rel  = $this->normalize_rel($rel);
         $full = $base.$rel;
         $added = 0;
+        
+        // لاگ مسیر برای دیباگ
+        $this->log("→ بررسی مسیر: rel='$rel' full='$full'");
+        
+        if (!file_exists($full)) {
+            $this->log("⚠️ مسیر وجود ندارد: $full");
+            return 0;
+        }
+        
         if (is_file($full)) {
+            $this->log("  ✓ این یک فایل است: $rel");
             $scanned++;
-            if (!$this->is_excluded($rel,$exclude)) { $zip->addFile($full,$rel); $added++; }
+            if (!$this->is_excluded($rel,$exclude)) { 
+                $zip->addFile($full,$rel); 
+                $added++; 
+                $this->log("  ✓ فایل اضافه شد: $rel");
+            } else {
+                $this->log("  ✗ فایل حذف شد (exclude): $rel");
+            }
             return $added;
         }
-        if (!is_dir($full)) return 0;
-        $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($full, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::LEAVES_ONLY);
-        foreach ($it as $file) {
-            $scanned++;
-            $path = str_replace($base,'',$file->getPathname());
-            $path = str_replace('\\','/',$path);
-            if ($this->is_excluded($path,$exclude)) continue;
-            $zip->addFile($file->getPathname(), $path);
-            $added++;
+        
+        if (!is_dir($full)) {
+            $this->log("⚠️ نه فایل است نه دایرکتوری: $full");
+            return 0;
         }
+        
+        $this->log("  📁 این یک دایرکتوری است، در حال اسکن...");
+        
+        try {
+            $it = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($full, FilesystemIterator::SKIP_DOTS), 
+                RecursiveIteratorIterator::LEAVES_ONLY
+            );
+            foreach ($it as $file) {
+                $scanned++;
+                $path = str_replace($base,'',$file->getPathname());
+                $path = str_replace('\\','/',$path);
+                if ($this->is_excluded($path,$exclude)) continue;
+                $zip->addFile($file->getPathname(), $path);
+                $added++;
+                
+                // لاگ هر 1000 فایل
+                if ($added % 1000 === 0) {
+                    $this->log("  پیشرفت: $added فایل اضافه شد از دایرکتوری $rel...");
+                }
+            }
+        } catch (Exception $e) {
+            $this->log("❌ خطا در خواندن مسیر $rel: ".$e->getMessage());
+        }
+        
         return $added;
     }
 
@@ -640,21 +747,57 @@ class FDU_Plugin {
         $rel  = $this->normalize_rel($rel);
         $full = $base.$rel;
         $added = 0;
+        
+        // لاگ مسیر برای دیباگ
+        $this->log("→ بررسی مسیر: rel='$rel' full='$full'");
+        
+        if (!file_exists($full)) {
+            $this->log("⚠️ مسیر وجود ندارد: $full");
+            return 0;
+        }
+        
         if (is_file($full)) {
+            $this->log("  ✓ این یک فایل است: $rel");
             $scanned++;
-            if (!$this->is_excluded($rel,$exclude)) { $ph->addFile($full,$rel); $added++; }
+            if (!$this->is_excluded($rel,$exclude)) { 
+                $ph->addFile($full,$rel); 
+                $added++; 
+                $this->log("  ✓ فایل اضافه شد: $rel");
+            } else {
+                $this->log("  ✗ فایل حذف شد (exclude): $rel");
+            }
             return $added;
         }
-        if (!is_dir($full)) return 0;
-        $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($full, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::LEAVES_ONLY);
-        foreach ($it as $file) {
-            $scanned++;
-            $path = str_replace($base,'',$file->getPathname());
-            $path = str_replace('\\','/',$path);
-            if ($this->is_excluded($path,$exclude)) continue;
-            $ph->addFile($file->getPathname(), $path);
-            $added++;
+        
+        if (!is_dir($full)) {
+            $this->log("⚠️ نه فایل است نه دایرکتوری: $full");
+            return 0;
         }
+        
+        $this->log("  📁 این یک دایرکتوری است، در حال اسکن...");
+        
+        try {
+            $it = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($full, FilesystemIterator::SKIP_DOTS), 
+                RecursiveIteratorIterator::LEAVES_ONLY
+            );
+            foreach ($it as $file) {
+                $scanned++;
+                $path = str_replace($base,'',$file->getPathname());
+                $path = str_replace('\\','/',$path);
+                if ($this->is_excluded($path,$exclude)) continue;
+                $ph->addFile($file->getPathname(), $path);
+                $added++;
+                
+                // لاگ هر 1000 فایل
+                if ($added % 1000 === 0) {
+                    $this->log("  پیشرفت: $added فایل اضافه شد از دایرکتوری $rel...");
+                }
+            }
+        } catch (Exception $e) {
+            $this->log("❌ خطا در خواندن مسیر $rel: ".$e->getMessage());
+        }
+        
         return $added;
     }
 
@@ -662,6 +805,29 @@ class FDU_Plugin {
         $url = trim($opts['endpoint_url']);
         if (empty($url)) { $this->log('Endpoint تنظیم نشده.'); return false; }
 
+        $file_size = @filesize($file_path);
+        $filename  = basename($file_path);
+        $this->log('Upload prep: file='.$filename.' size='.(($file_size===false)?'?':number_format($file_size/1048576,2).'MB').' bytes='.$file_size);
+
+        // اگر فایل بزرگ‌تر از 50MB باشه، از روش انتخابی استفاده می‌کنیم
+        $chunk_threshold = 50 * 1024 * 1024; // 50MB
+        if ($file_size > $chunk_threshold) {
+            $upload_method = isset($opts['upload_method']) ? $opts['upload_method'] : 'stream';
+            $this->log('فایل بزرگ است ('.number_format($file_size/1048576,2).'MB). استفاده از روش: '.$upload_method);
+            
+            if ($upload_method === 'chunk') {
+                return $this->upload_file_chunked($file_path, $opts, $meta);
+            } else {
+                return $this->upload_file_stream($file_path, $opts, $meta);
+            }
+        }
+
+        // برای فایل‌های کوچک، از روش قبلی استفاده می‌کنیم
+        return $this->upload_file_simple($file_path, $opts, $meta);
+    }
+
+    private function upload_file_simple($file_path, $opts, $meta = []) {
+        $url = trim($opts['endpoint_url']);
         $headers = [ 'Accept' => 'application/json', 'Expect' => '' ];
         $token = defined('FDU_TOKEN') ? FDU_TOKEN : (string)$opts['token'];
         if (!empty($opts['header_name']) && !empty($token)) {
@@ -670,7 +836,6 @@ class FDU_Plugin {
 
         $file_size = @filesize($file_path);
         $filename  = basename($file_path);
-        $this->log('Upload prep: file='.$filename.' size='.(($file_size===False)?'?':$file_size).' bytes');
 
         $make_fields = function($minimal=false) use ($opts,$filename) {
             $fields = [];
@@ -736,15 +901,257 @@ class FDU_Plugin {
             if (is_wp_error($response)) { $this->log('WP Error: '.$response->get_error_message()); continue; }
             $code = wp_remote_retrieve_response_code($response);
             $body = wp_remote_retrieve_body($response);
-            $hdrs = wp_remote_retrieve_headers($response);
             $this->log('HTTP Status: '.$code);
-            $this->log('Response headers: '.print_r($hdrs,true));
             $this->log('Response body: '.substr($body,0,2000));
             if ($code>=200 && $code<300) return true;
             $last_code=$code;
         }
         $this->log('Upload failed after strategies. Last status='.$last_code);
         return false;
+    }
+
+    private function upload_file_stream($file_path, $opts, $meta = []) {
+        if (!function_exists('curl_init')) {
+            $this->log('خطا: cURL در دسترس نیست. سوییچ به روش ساده...');
+            return $this->upload_file_simple($file_path, $opts, $meta);
+        }
+
+        $url = trim($opts['endpoint_url']);
+        $file_size = filesize($file_path);
+        $filename = basename($file_path);
+        $mime = isset($meta['type']) ? $meta['type'] : ( preg_match('~\.gz$~',$filename) ? 'application/gzip' : (preg_match('~\.zip$~',$filename)?'application/zip':'application/octet-stream') );
+        
+        $this->log("شروع Stream Upload: فایل $filename با اندازه ".number_format($file_size/1048576,2)."MB");
+
+        // استفاده از CURLFile که خودش stream می‌کنه
+        if (class_exists('CURLFile') && empty($opts['force_manual_multipart'])) {
+            $this->log("استفاده از CURLFile برای stream...");
+            
+            // آماده‌سازی فیلدهای اضافه
+            $fields = [];
+            $extra = $opts['extra_fields'];
+            if (!empty($extra)) {
+                $decoded = json_decode($extra, true);
+                if (is_array($decoded)) {
+                    foreach ($decoded as $k=>$v) $fields[$k]=(string)$v;
+                }
+            }
+            $fields += ['site'=>home_url(), 'db'=>DB_NAME, 'created_at'=>wp_date('c')];
+            
+            $dest = trim((string)$opts['dest_relative_path']);
+            if ($dest!=='') {
+                $last = basename($dest);
+                $fields['relativePath'] = (strpos($last,'.')===false) ? rtrim($dest,'/\\').'/'.$filename : $dest;
+            } else {
+                $fields['relativePath'] = $filename;
+            }
+
+            // اضافه کردن فایل با CURLFile
+            $fields[$opts['multipart_field']] = new CURLFile($file_path, $mime, $filename);
+
+            // توکن
+            $token = defined('FDU_TOKEN') ? FDU_TOKEN : (string)$opts['token'];
+
+            // ارسال با cURL + POST
+            $ch = curl_init();
+            
+            $last_progress = 0;
+            curl_setopt_array($ch, [
+                CURLOPT_URL => $url,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => $fields,
+                CURLOPT_HTTPHEADER => [
+                    $opts['header_name'].': '.$opts['token_prefix'].$token,
+                    'Accept: application/json',
+                    'Expect:'
+                ],
+                CURLOPT_TIMEOUT => 3600, // 1 ساعت
+                CURLOPT_CONNECTTIMEOUT => 30,
+                CURLOPT_SSL_VERIFYPEER => true,
+                CURLOPT_SSL_VERIFYHOST => 2,
+                // Progress callback
+                CURLOPT_NOPROGRESS => false,
+                CURLOPT_PROGRESSFUNCTION => function($ch, $download_size, $downloaded, $upload_size, $uploaded) use (&$last_progress) {
+                    if ($upload_size > 0 && $uploaded > 0) {
+                        $percent = ($uploaded / $upload_size) * 100;
+                        // لاگ فقط وقتی که 10% جلو رفته باشیم
+                        if (floor($percent / 10) > floor($last_progress / 10)) {
+                            $this->log("  پیشرفت آپلود: ".number_format($percent, 1)."% (".number_format($uploaded/1048576,1)."MB / ".number_format($upload_size/1048576,1)."MB)");
+                            $last_progress = $percent;
+                        }
+                    }
+                }
+            ]);
+
+            $response = curl_exec($ch);
+            $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $curl_error = curl_error($ch);
+            curl_close($ch);
+
+            if ($curl_error) {
+                $this->log("خطای cURL: $curl_error");
+                return false;
+            }
+
+            $this->log("HTTP Status: $http_code");
+            $this->log("Response body: ".substr($response,0,500));
+
+            if ($http_code >= 200 && $http_code < 300) {
+                $this->log("✅ Stream Upload کامل شد با موفقیت.");
+                return true;
+            } else {
+                $this->log("❌ خطای HTTP: کد $http_code");
+                return false;
+            }
+        }
+        
+        // اگر CURLFile در دسترس نباشه، از روش ساده استفاده می‌کنیم
+        $this->log("CURLFile در دسترس نیست. سوییچ به روش ساده...");
+        return $this->upload_file_simple($file_path, $opts, $meta);
+    }
+
+    private function upload_file_chunked($file_path, $opts, $meta = []) {
+        if (!function_exists('curl_init')) {
+            $this->log('خطا: cURL در دسترس نیست. سوییچ به روش ساده...');
+            return $this->upload_file_simple($file_path, $opts, $meta);
+        }
+
+        $url = trim($opts['endpoint_url']);
+        $file_size = filesize($file_path);
+        $filename = basename($file_path);
+        $mime = isset($meta['type']) ? $meta['type'] : ( preg_match('~\.gz$~',$filename) ? 'application/gzip' : (preg_match('~\.zip$~',$filename)?'application/zip':'application/octet-stream') );
+        
+        // اندازه هر chunk (پیش‌فرض 5MB)
+        $chunk_size_mb = isset($opts['chunk_size_mb']) && intval($opts['chunk_size_mb']) > 0 ? intval($opts['chunk_size_mb']) : 5;
+        $chunk_size = $chunk_size_mb * 1024 * 1024;
+        $total_chunks = ceil($file_size / $chunk_size);
+        
+        $this->log("شروع Chunked Upload: $total_chunks قطعه، هر قطعه ".number_format($chunk_size/1048576,2)."MB");
+
+        // آماده‌سازی فیلدهای اضافه
+        $fields = [];
+        $extra = $opts['extra_fields'];
+        if (!empty($extra)) {
+            $decoded = json_decode($extra, true);
+            if (is_array($decoded)) {
+                foreach ($decoded as $k=>$v) $fields[$k]=(string)$v;
+            }
+        }
+        $fields += ['site'=>home_url(), 'db'=>DB_NAME, 'created_at'=>wp_date('c')];
+        
+        $dest = trim((string)$opts['dest_relative_path']);
+        if ($dest!=='') {
+            $last = basename($dest);
+            $fields['relativePath'] = (strpos($last,'.')===false) ? rtrim($dest,'/\\').'/'.$filename : $dest;
+        } else {
+            $fields['relativePath'] = $filename;
+        }
+
+        // توکن
+        $token = defined('FDU_TOKEN') ? FDU_TOKEN : (string)$opts['token'];
+        
+        $fp = fopen($file_path, 'rb');
+        if (!$fp) {
+            $this->log('خطا: نمی‌توان فایل را باز کرد.');
+            return false;
+        }
+
+        $chunk_index = 0;
+        $uploaded = 0;
+
+        while (!feof($fp)) {
+            $chunk_data = fread($fp, $chunk_size);
+            if ($chunk_data === false) break;
+            
+            $chunk_index++;
+            $current_chunk_size = strlen($chunk_data);
+            $uploaded += $current_chunk_size;
+            
+            $this->log("آپلود قطعه $chunk_index از $total_chunks (".number_format($current_chunk_size/1048576,2)."MB) - پیشرفت: ".number_format(($uploaded/$file_size)*100,1)."% ");
+
+            // ساخت multipart برای این chunk
+            $boundary = '----WebKitFormBoundary' . uniqid();
+            $eol = "\r\n";
+            
+            $body = '';
+            
+            // اضافه کردن فیلدها فقط برای chunk اول
+            if ($chunk_index === 1) {
+                foreach ($fields as $name => $value) {
+                    $body .= "--$boundary$eol";
+                    $body .= "Content-Disposition: form-data; name=\"$name\"$eol$eol";
+                    $body .= "$value$eol";
+                }
+            }
+            
+            // اضافه کردن metadata برای chunk
+            $body .= "--$boundary$eol";
+            $body .= "Content-Disposition: form-data; name=\"chunkIndex\"$eol$eol";
+            $body .= "$chunk_index$eol";
+            
+            $body .= "--$boundary$eol";
+            $body .= "Content-Disposition: form-data; name=\"totalChunks\"$eol$eol";
+            $body .= "$total_chunks$eol";
+            
+            $body .= "--$boundary$eol";
+            $body .= "Content-Disposition: form-data; name=\"originalFilename\"$eol$eol";
+            $body .= "$filename$eol";
+            
+            // اضافه کردن خود chunk
+            $body .= "--$boundary$eol";
+            $body .= "Content-Disposition: form-data; name=\"".$opts['multipart_field']."\"; filename=\"$filename\"$eol";
+            $body .= "Content-Type: $mime$eol$eol";
+            $body .= $chunk_data . $eol;
+            $body .= "--$boundary--$eol";
+
+            // ارسال با cURL
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL => $url,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => $body,
+                CURLOPT_HTTPHEADER => [
+                    $opts['header_name'].': '.$opts['token_prefix'].$token,
+                    'Content-Type: multipart/form-data; boundary='.$boundary,
+                    'Accept: application/json',
+                    'Expect:'
+                ],
+                CURLOPT_TIMEOUT => 600,
+                CURLOPT_CONNECTTIMEOUT => 30,
+                CURLOPT_SSL_VERIFYPEER => true,
+                CURLOPT_SSL_VERIFYHOST => 2
+            ]);
+
+            $response = curl_exec($ch);
+            $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $curl_error = curl_error($ch);
+            curl_close($ch);
+
+            if ($curl_error) {
+                $this->log("خطای cURL در قطعه $chunk_index: $curl_error");
+                fclose($fp);
+                return false;
+            }
+
+            if ($http_code < 200 || $http_code >= 300) {
+                $this->log("خطای HTTP در قطعه $chunk_index: کد $http_code - پاسخ: ".substr($response,0,500));
+                fclose($fp);
+                return false;
+            }
+
+            $this->log("قطعه $chunk_index با موفقیت آپلود شد (HTTP $http_code)");
+            
+            // تاخیر کوتاه بین chunk‌ها برای جلوگیری از فشار به سرور
+            if ($chunk_index < $total_chunks) {
+                usleep(100000); // 0.1 ثانیه
+            }
+        }
+
+        fclose($fp);
+        $this->log("✅ Chunked Upload کامل شد: $total_chunks قطعه با موفقیت آپلود شد.");
+        return true;
     }
 }
 
