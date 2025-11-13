@@ -3,7 +3,7 @@
  * Plugin Name: Files.ir Wordpress Backup
  * Plugin URI: https://github.com/SaeedFard
  * Description: پایگاه‌داده + فایل‌های مهم وردپرس را زمان‌بندی‌شده خروجی می‌گیرد و به Files.ir آپلود می‌کند.
- * Version: 1.1.2
+ * Version: 1.1.4
  * Author: Saeed Fard
  * Author URI: https://github.com/SaeedFard
  * License: GPLv2 or later
@@ -87,15 +87,28 @@ class FDU_Plugin {
             $wday = isset($opts['weekday']) ? intval($opts['weekday']) : 6; // پیش‌فرض: شنبه
             $today_w = intval($now->format('w'));
             $days_ahead = ($wday - $today_w + 7) % 7;
+            
+            // اول روز هدف رو با ساعت مشخص بسازیم
             $target = $now->setTime($hour, $min, 0);
             
             // Debug log
-            $this->log('DEBUG: now='.$now->format('Y-m-d H:i:s').' (w='.$today_w.') | target='.$target->format('Y-m-d H:i:s').' | wday='.$wday.' | days_ahead='.$days_ahead);
+            $this->log('DEBUG: now='.$now->format('Y-m-d H:i:s (l)').' (w='.$today_w.') | wday='.$wday.' | days_ahead='.$days_ahead);
             
-            // مقایسه صحیح با همون timezone
-            if ($days_ahead === 0 && $target <= $now) {
-                $days_ahead = 7;
-                $this->log('DEBUG: زمان گذشته است، +7 روز اضافه شد');
+            // اگر روز هدف همون امروز است (days_ahead = 0)
+            if ($days_ahead === 0) {
+                // اگر ساعت هدف گذشته، بریم به هفته بعد
+                if ($target <= $now) {
+                    $days_ahead = 7;
+                    $this->log('DEBUG: همون روز امروز انتخاب شده اما زمان گذشته است، +7 روز');
+                }
+            }
+            // برای روزهای دیگر، بعد از اضافه کردن روزها چک کنیم که زمان از الان جلوتر باشه
+            else {
+                $test_target = $target->modify('+'.$days_ahead.' days');
+                if ($test_target <= $now) {
+                    $days_ahead += 7;
+                    $this->log('DEBUG: زمان محاسبه شده گذشته بود، +7 روز اضافه شد. days_ahead='.$days_ahead);
+                }
             }
             
             $final = $target->modify('+'.$days_ahead.' days');
@@ -284,10 +297,31 @@ class FDU_Plugin {
         $worker_url = add_query_arg(['action'=>'fdu_worker','key'=>$opts['bg_key']], admin_url('admin-post.php'));
         ?>
         <div class="wrap">
-            <h1>Files.ir Wordpress Backup <small style="opacity:.6">v1.1.2 - اصلاح باگ timezone در زمان‌بندی</small></h1>
+            <h1>Files.ir Wordpress Backup <small style="opacity:.6">v1.1.4 - اصلاح UI زمان‌بندی (نمایش فیلد روز فقط در حالت هفتگی)</small></h1>
             <form method="post" action="options.php">
                 <?php settings_fields('fdu_settings_group'); do_settings_sections($this->admin_page_slug); submit_button(); ?>
             </form>
+            
+            <script>
+            jQuery(document).ready(function($) {
+                function toggleWeekdayField() {
+                    var frequency = $('#<?php echo esc_js(self::OPT); ?>_frequency').val();
+                    var weekdayRow = $('#<?php echo esc_js(self::OPT); ?>_weekday').closest('tr');
+                    
+                    if (frequency === 'weekly') {
+                        weekdayRow.show();
+                    } else {
+                        weekdayRow.hide();
+                    }
+                }
+                
+                // اجرای اولیه
+                toggleWeekdayField();
+                
+                // وقتی frequency عوض میشه
+                $('#<?php echo esc_js(self::OPT); ?>_frequency').on('change', toggleWeekdayField);
+            });
+            </script>
 
             <h2>عملیات دستی</h2>
             <p>
@@ -616,7 +650,7 @@ class FDU_Plugin {
                 $added += $this->zip_add_path($zip, $rel, $exclude, $total);
             }
             $zip->close();
-            $this->log("✅ آرشیو ZIP ساخته شد: $out (فایل‌ها: $added / اسکن: $total)");
+            $this->log("✅ آرشیو ZIP ساخته شد: $out (فایل‌ها: $added / اسکان: $total)");
             return $out;
         } else {
             if (!class_exists('PharData') || ini_get('phar.readonly')) {
@@ -637,7 +671,7 @@ class FDU_Plugin {
                 $ph->compress(Phar::GZ); 
                 unset($ph); 
                 @unlink($tar);
-                $this->log("✅ آرشیو TAR.GZ ساخته شد: $dir/files-$date.files.tar.gz (فایل‌ها: $added / اسکن: $total)");
+                $this->log("✅ آرشیو TAR.GZ ساخته شد: $dir/files-$date.files.tar.gz (فایل‌ها: $added / اسکان: $total)");
                 return "$dir/files-$date.files.tar.gz";
             } catch (Exception $e) { 
                 $this->log('❌ خطای TAR.GZ: '.$e->getMessage().'. سوئیچ خودکار به ZIP.'); 
@@ -670,7 +704,7 @@ class FDU_Plugin {
             $added += $this->zip_add_path($zip, $rel, $exclude, $total);
         }
         $zip->close();
-        $this->log("✅ آرشیو ZIP (fallback) ساخته شد: $out (فایل‌ها: $added / اسکن: $total)");
+        $this->log("✅ آرشیو ZIP (fallback) ساخته شد: $out (فایل‌ها: $added / اسکان: $total)");
         return $out;
     }
 
