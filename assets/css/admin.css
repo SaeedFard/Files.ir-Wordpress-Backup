@@ -1,25 +1,10 @@
-/**
- * Admin CSS
- * استایل صفحه تنظیمات
- * 
- * @package Files_IR_Backup
- * @since 1.2.0
- */
-
-/* ========================================
-   Settings Page Container
-   ======================================== */
 .fdu-settings-wrap {
     margin-top: 20px;
 }
 
-/* ========================================
-   Tab Navigation
-   ======================================== */
 .fdu-nav-tabs {
     margin: 20px 0 0 0;
     border-bottom: 1px solid #c3c4c7;
-    background: #fff;
 }
 
 .fdu-nav-tabs .nav-tab {
@@ -33,14 +18,6 @@
     color: #50575e;
     text-decoration: none;
     font-size: 14px;
-    transition: all 0.2s ease;
-    position: relative;
-    margin-bottom: -1px;
-}
-
-.fdu-nav-tabs .nav-tab:hover {
-    background: #f6f7f7;
-    color: #135e96;
 }
 
 .fdu-nav-tabs .nav-tab-active {
@@ -51,36 +28,13 @@
     font-weight: 600;
 }
 
-.fdu-nav-tabs .nav-tab-active::after {
-    content: '';
-    position: absolute;
-    bottom: -1px;
-    left: 0;
-    right: 0;
-    height: 2px;
-    background: #f0f0f1;
-}
-
-.fdu-nav-tabs .dashicons {
-    font-size: 18px;
-    width: 18px;
-    height: 18px;
-}
-
-/* ========================================
-   Tab Content
-   ======================================== */
 .fdu-tab-content {
     background: #fff;
     padding: 25px;
     border: 1px solid #c3c4c7;
     border-top: none;
-    box-shadow: 0 1px 1px rgba(0,0,0,.04);
 }
 
-/* ========================================
-   Sections
-   ======================================== */
 .fdu-section {
     margin-bottom: 35px;
     padding-bottom: 25px;
@@ -89,73 +43,23 @@
 
 .fdu-section:last-child {
     border-bottom: none;
-    margin-bottom: 0;
 }
 
 .fdu-section-title {
     font-size: 17px;
     font-weight: 600;
     margin: 0 0 20px 0;
-    padding: 0;
-    color: #1d2327;
     display: flex;
     align-items: center;
     gap: 8px;
 }
 
-.fdu-section-title .dashicons {
-    font-size: 20px;
-    width: 20px;
-    height: 20px;
-    color: #2271b1;
-}
-
-/* ========================================
-   Form Tables
-   ======================================== */
-.fdu-form-table th {
-    width: 240px;
-    padding: 15px 10px 15px 0;
-    vertical-align: top;
-    font-weight: 600;
-}
-
-.fdu-form-table td {
-    padding: 15px 10px;
-}
-
-.fdu-form-table .description,
-.fdu-help-text {
-    display: block;
-    margin-top: 5px;
-    color: #646970;
-    font-size: 13px;
-    line-height: 1.5;
-}
-
-/* ========================================
-   Buttons
-   ======================================== */
 .fdu-button-group {
     display: flex;
-    flex-wrap: wrap;
     gap: 10px;
     margin: 20px 0;
 }
 
-.fdu-button-group .button {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-}
-
-.fdu-button-group .dashicons {
-    margin-top: 0;
-}
-
-/* ========================================
-   Info Boxes
-   ======================================== */
 .fdu-info-box {
     background: #f0f6fc;
     border: 1px solid #c3e4fc;
@@ -165,138 +69,18 @@
     margin: 20px 0;
 }
 
-.fdu-info-box p {
-    margin: 0 0 10px 0;
-}
-
-.fdu-info-box p:last-child {
-    margin-bottom: 0;
-}
-
-.fdu-info-box.warning {
-    background: #fcf9e8;
-    border-color: #f0e68c;
-    border-left-color: #dba617;
-}
-
 .fdu-info-box.success {
     background: #edfaef;
     border-color: #9ed9a3;
     border-left-color: #00a32a;
 }
 
-.fdu-info-box.error {
-    background: #fcf0f1;
-    border-color: #f0b8be;
-    border-left-color: #d63638;
-}
-
-.fdu-info-box ul {
-    margin: 10px 0 0 20px;
-}
-
-.fdu-info-box li {
-    margin-bottom: 5px;
-}
-
-/* ========================================
-   Code Blocks
-   ======================================== */
 .fdu-code-block {
     background: #f6f7f7;
     border: 1px solid #c3c4c7;
     padding: 12px 15px;
     border-radius: 4px;
-    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', 'source-code-pro', monospace;
+    font-family: monospace;
     font-size: 13px;
     word-break: break-all;
-    direction: ltr;
-    text-align: left;
-}
-
-/* ========================================
-   Status Indicators
-   ======================================== */
-.fdu-status-indicator {
-    display: inline-block;
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    margin-left: 5px;
-}
-
-.fdu-status-indicator.success {
-    background: #00a32a;
-}
-
-.fdu-status-indicator.error {
-    background: #d63638;
-}
-
-.fdu-status-indicator.warning {
-    background: #dba617;
-}
-
-/* ========================================
-   Responsive
-   ======================================== */
-@media screen and (max-width: 782px) {
-    .fdu-nav-tabs .nav-tab {
-        padding: 10px 15px;
-        font-size: 13px;
-    }
-    
-    .fdu-nav-tabs .dashicons {
-        font-size: 16px;
-        width: 16px;
-        height: 16px;
-    }
-    
-    .fdu-button-group {
-        flex-direction: column;
-    }
-    
-    .fdu-button-group .button {
-        width: 100%;
-        justify-content: center;
-    }
-    
-    .fdu-form-table th,
-    .fdu-form-table td {
-        display: block;
-        width: 100%;
-    }
-    
-    .fdu-form-table th {
-        padding-bottom: 5px;
-    }
-}
-
-/* ========================================
-   Animations
-   ======================================== */
-@keyframes fadeIn {
-    from {
-        opacity: 0;
-        transform: translateY(-10px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
-.fdu-tab-content {
-    animation: fadeIn 0.3s ease;
-}
-
-/* ========================================
-   WordPress Core Compatibility
-   ======================================== */
-.fdu-settings-wrap .form-table th {
-    padding-left: 0;
-}
-
-.fdu-settings-wrap .form-table td {
-    padding-right: 0;
 }

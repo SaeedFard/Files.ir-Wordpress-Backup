@@ -85,7 +85,13 @@ class FDU_Admin {
      * ثبت تنظیمات
      */
     public function register_settings() {
-        register_setting($this->option_group, $this->option_name);
+        register_setting(
+            $this->option_group, 
+            $this->option_name,
+            [
+                'sanitize_callback' => [$this, 'sanitize_settings']
+            ]
+        );
         
         // API Tab
         $this->register_api_settings();
@@ -267,6 +273,46 @@ class FDU_Admin {
                 $field
             );
         }
+    }
+    
+    /**
+     * Sanitize و merge تنظیمات
+     * این متد تنظیمات جدید رو با قدیمی merge می‌کنه
+     * تا فیلدهای تب‌های دیگه پاک نشن
+     * 
+     * @param array $input تنظیمات جدید
+     * @return array تنظیمات merged
+     */
+    public function sanitize_settings($input) {
+        // دریافت تنظیمات قبلی
+        $old_settings = get_option($this->option_name, []);
+        
+        // اگر input خالی باشه، همون قدیمی رو برگردون
+        if (empty($input)) {
+            return $old_settings;
+        }
+        
+        // Merge کردن: تنظیمات جدید روی قدیمی override می‌شه
+        $merged = array_merge($old_settings, $input);
+        
+        // Sanitize کردن مقادیر
+        foreach ($merged as $key => $value) {
+            if (is_string($value)) {
+                $merged[$key] = sanitize_text_field($value);
+            } elseif (is_array($value)) {
+                $merged[$key] = array_map('sanitize_text_field', $value);
+            }
+        }
+        
+        // فیلدهای textarea رو جداگانه sanitize می‌کنیم
+        $textarea_fields = ['include_paths', 'exclude_patterns', 'extra_fields'];
+        foreach ($textarea_fields as $field) {
+            if (isset($input[$field])) {
+                $merged[$field] = sanitize_textarea_field($input[$field]);
+            }
+        }
+        
+        return $merged;
     }
     
     /**
