@@ -21,6 +21,9 @@ define('FDU_PLUGIN_URL', plugin_dir_url(__FILE__));
 // بارگذاری کلاس‌های اصلی
 require_once FDU_PLUGIN_DIR . 'includes/class-logger.php';
 require_once FDU_PLUGIN_DIR . 'includes/class-scheduler.php';
+require_once FDU_PLUGIN_DIR . 'includes/class-backup-database.php';
+require_once FDU_PLUGIN_DIR . 'includes/class-backup-files.php';
+require_once FDU_PLUGIN_DIR . 'includes/class-uploader.php';
 
 // بارگذاری کلاس Admin فقط در بخش مدیریت
 if (is_admin()) {
@@ -75,6 +78,9 @@ class FDU_Plugin {
         
         // بازتنظیم خودکار زمان‌بندی هنگام تغییر تنظیمات
         add_action('updated_option', [$this, 'maybe_reschedule'], 10, 3);
+        
+        // هوک worker برای اجرای بکاپ
+        add_action('fdu_worker_backup', [$this, 'run_backup_job']);
     }
     
     /**
@@ -214,9 +220,8 @@ class FDU_Plugin {
         
         FDU_Logger::log('=== Worker started (direct call) ===');
         
-        // TODO: فراخوانی متد بکاپ
-        // این قسمت باید بعداً با کلاس‌های Backup و Uploader تکمیل بشه
-        do_action('fdu_worker_backup');
+        // اجرای بکاپ
+        $this->run_backup_job();
         
         FDU_Logger::log('=== Worker finished ===');
         
@@ -252,9 +257,15 @@ class FDU_Plugin {
             
             FDU_Logger::log('فایل تست ساخته شد: ' . basename($gz) . ' (' . filesize($gz) . ' bytes)');
             
-            // TODO: فراخوانی متد آپلود
-            // این قسمت باید بعداً با کلاس Uploader تکمیل بشه
-            FDU_Logger::warning('⚠️ متد آپلود هنوز پیاده‌سازی نشده (TODO)');
+            // آپلود
+            $uploader = new FDU_Uploader($opts);
+            $result = $uploader->upload($gz, ['type' => 'test']);
+            
+            if ($result) {
+                FDU_Logger::success('✅ تست آپلود موفق بود');
+            } else {
+                FDU_Logger::error('❌ تست آپلود ناموفق بود');
+            }
             
             @unlink($gz);
         } else {
@@ -358,6 +369,167 @@ class FDU_Plugin {
         
         wp_safe_redirect(wp_get_referer() ?: admin_url('options-general.php?page=files-ir-wordpress-backup&tab=advanced'));
         exit;
+    }
+    
+    /**
+     * اجرای Job بکاپ
+     */
+    public function run_backup_job() {
+        @ignore_user_abort(true);
+        @set_time_limit(0);
+        @ini_set('max_execution_time', '0');
+        @ini_set('memory_limit', '512M');
+        
+        $opts = $this->get_options();
+        
+        FDU_Logger::log('========================================');
+        FDU_Logger::log('شروع فرایند بکاپ کامل');
+        FDU_Logger::log('========================================');
+        
+        $success = true;
+        $files_to_upload = [];
+        
+        // 1. بکاپ دیتابیس
+        FDU_Logger::log('');
+        $db_backup = new FDU_Backup_Database($opts);
+        $sql_file = $db_backup->export();
+        
+        if ($sql_file) {
+            $gz_file = $db_backup->compress($sql_file);
+            
+            if ($gz_file) {
+                $files_to_upload[] = $gz_file;
+            } else {
+                $success = false;
+            }
+        } else {
+            $success = false;
+        }
+        
+        // 2. بکاپ فایل‌ها (اختیاری)
+        if (!empty($opts['enable_files_backup'])) {
+            FDU_Logger::log('');
+            $files_backup = new FDU_Backup_Files($opts);
+            $archive = $files_backup->create_archive();
+            
+            if ($archive) {
+                $files_to_upload[] = $archive;
+            } else {
+                $success = false;
+            }
+        }
+        
+        // 3. آپلود فایل‌ها
+        if (!empty($files_to_upload)) {
+            FDU_Logger::log('');
+            FDU_Logger::log('شروع آپلود فایل‌ها به Files.ir...');
+            
+            $uploader = new FDU_Uploader($opts);
+            
+            foreach ($files_to_upload as $file) {
+                FDU_Logger::log('');
+                
+                $result = $uploader->upload($file);
+                
+                if (!$result) {
+                    $success = false;
+                }
+                
+                // حذف فایل اگر keep_local غیرفعال باشه
+                if (empty($opts['keep_local'])) {
+                    @unlink($file);
+                    FDU_Logger::log('فایل محلی حذف شد: ' . basename($file));
+                }
+            }
+        }
+        
+        // 4. Retention - نگهداری نسخه‌های محلی
+        if (!empty($opts['keep_local'])) {
+            $this->apply_retention($opts['retention']);
+        }
+        
+        // 5. ایمیل اعلان
+        if (!empty($opts['email'])) {
+            $this->send_notification($opts['email'], $success);
+        }
+        
+        // 6. بازتنظیم زمان‌بندی برای اجرای بعدی
+        FDU_Scheduler::schedule($opts);
+        
+        FDU_Logger::log('');
+        FDU_Logger::log('========================================');
+        
+        if ($success) {
+            FDU_Logger::success('✅ فرایند بکاپ با موفقیت انجام شد');
+        } else {
+            FDU_Logger::error('❌ برخی بخش‌های بکاپ ناموفق بودند');
+        }
+        
+        FDU_Logger::log('========================================');
+        
+        return $success;
+    }
+    
+    /**
+     * اعمال سیاست retention
+     */
+    private function apply_retention($keep = 7) {
+        $upload_dir = wp_upload_dir();
+        $backup_dir = trailingslashit($upload_dir['basedir']) . 'files-ir-wordpress-backup';
+        
+        // بکاپ دیتابیس
+        $this->apply_retention_pattern($backup_dir, '*.sql.gz', $keep);
+        
+        // بکاپ فایل‌ها - ZIP
+        $this->apply_retention_pattern($backup_dir, '*.files.zip', $keep);
+        
+        // بکاپ فایل‌ها - TAR.GZ
+        $this->apply_retention_pattern($backup_dir, '*.files.tar.gz', $keep);
+    }
+    
+    /**
+     * اعمال retention برای یک pattern خاص
+     */
+    private function apply_retention_pattern($dir, $pattern, $keep) {
+        $files = glob($dir . '/' . $pattern);
+        
+        if (empty($files) || count($files) <= $keep) {
+            return;
+        }
+        
+        // مرتب‌سازی بر اساس زمان (جدیدترین اول)
+        usort($files, function($a, $b) {
+            return filemtime($b) - filemtime($a);
+        });
+        
+        // حذف فایل‌های قدیمی
+        $deleted = 0;
+        for ($i = $keep; $i < count($files); $i++) {
+            if (@unlink($files[$i])) {
+                $deleted++;
+            }
+        }
+        
+        if ($deleted > 0) {
+            FDU_Logger::log("Retention: {$deleted} فایل قدیمی حذف شد ({$pattern})");
+        }
+    }
+    
+    /**
+     * ارسال ایمیل اعلان
+     */
+    private function send_notification($email, $success) {
+        $subject = 'Files.ir WordPress Backup: ' . ($success ? 'موفق' : 'خطا');
+        
+        $message = "سایت: " . home_url() . "\n";
+        $message .= "زمان: " . wp_date('Y-m-d H:i:s') . "\n";
+        $message .= "وضعیت: " . ($success ? 'موفق ✅' : 'ناموفق ❌') . "\n\n";
+        
+        if (!$success) {
+            $message .= "لطفاً لاگ‌ها را بررسی کنید.\n";
+        }
+        
+        wp_mail($email, $subject, $message);
     }
 }
 
