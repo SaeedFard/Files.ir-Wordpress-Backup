@@ -79,8 +79,9 @@ class FDU_Plugin {
         // بازتنظیم خودکار زمان‌بندی هنگام تغییر تنظیمات
         add_action('updated_option', [$this, 'maybe_reschedule'], 10, 3);
         
-        // هوک worker برای اجرای بکاپ
-        add_action('fdu_worker_backup', [$this, 'run_backup_job']);
+        // اتصال هوک‌های WP-Cron به متد اجرای بکاپ
+        add_action(self::CRON_HOOK, [$this, 'run_backup_job']);
+        add_action(self::ASYNC_HOOK, [$this, 'run_backup_job']);
     }
     
     /**
@@ -116,47 +117,50 @@ class FDU_Plugin {
      * @return array
      */
     private function get_options() {
-        $defaults = [
-            'endpoint_url' => 'https://my.files.ir/api/v1/uploads',
-            'http_method' => 'POST',
-            'header_name' => 'Authorization',
-            'token_prefix' => 'Bearer ',
-            'token' => '',
-            'multipart_field' => 'file',
-            'dest_relative_path' => 'wp-backups',
-            'extra_fields' => '',
-            'keep_local' => 1,
-            'retention' => 7,
-            'enable_files_backup' => 1,
-            'archive_format' => 'zip',
-            'include_paths' => "wp-content/uploads\nwp-content/themes\nwp-content/plugins",
-            'include_wp_config' => 0,
-            'include_htaccess' => 0,
-            'exclude_patterns' => "cache\ncaches\nbackups\n*.log",
-            'frequency' => 'daily',
-            'weekday' => 6,
-            'hour' => 3,
-            'minute' => 0,
-            'email' => '',
-            'use_mysqldump' => 1,
-            'compat_mode' => 1,
-            'force_manual_multipart' => 1,
-            'chunk_size_mb' => 5,
-            'upload_method' => 'stream',
-            'bg_key' => '',
-        ];
+    $defaults = [
+        // تنظیمات ثابت Files.ir API
+        'endpoint_url'        => 'https://my.files.ir/api/v1/uploads',
+        'http_method'         => 'POST',
+        'header_name'         => 'Authorization',
+        'token_prefix'        => 'Bearer ',
+        'multipart_field'     => 'file',
         
-        $opts = get_option(self::OPT, []);
-        $opts = wp_parse_args($opts, $defaults);
+        // تنظیمات کاربر
+        'token'               => '',
+        'dest_relative_path'  => 'wp-backups',
+        'extra_fields'        => '',
         
-        // تولید کلید Worker اگر وجود نداره
-        if (empty($opts['bg_key'])) {
-            $opts['bg_key'] = wp_generate_password(32, false, false);
-            update_option(self::OPT, $opts);
-        }
-        
-        return $opts;
+        'keep_local'          => 1,
+        'retention'           => 7,
+        'enable_files_backup' => 1,
+        'archive_format'      => 'zip',
+        'include_paths'       => "wp-content/uploads\nwp-content/themes\nwp-content/plugins",
+        'include_wp_config'   => 0,
+        'include_htaccess'    => 0,
+        'exclude_patterns'    => "cache\ncaches\nbackups\n*.log",
+        'frequency'           => 'daily',
+        'weekday'             => 6,
+        'hour'                => 3,
+        'minute'              => 0,
+        'email'               => '',
+        'use_mysqldump'       => 1,
+        'compat_mode'         => 1,
+        'force_manual_multipart'=> 1,
+        'chunk_size_mb'       => 5,
+        'upload_method'       => 'stream',
+        'bg_key'              => '',
+    ];
+    
+    $opts = get_option(self::OPT, []);
+    $opts = wp_parse_args($opts, $defaults);
+    
+    if (empty($opts['bg_key'])) {
+        $opts['bg_key'] = wp_generate_password(32, false, false);
+        update_option(self::OPT, $opts);
     }
+    
+    return $opts;
+}
     
     // ========================================
     // Handler Methods

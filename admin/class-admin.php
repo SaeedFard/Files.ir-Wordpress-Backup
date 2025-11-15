@@ -15,9 +15,6 @@ class FDU_Admin {
     private $option_group = 'fdu_settings_group';
     private $option_name = 'fdu_settings';
     
-    /**
-     * تب‌های موجود
-     */
     private $tabs = [];
     
     public function __construct() {
@@ -25,9 +22,6 @@ class FDU_Admin {
         $this->init_hooks();
     }
     
-    /**
-     * تنظیم تب‌ها
-     */
     private function setup_tabs() {
         $this->tabs = [
             'api' => [
@@ -53,24 +47,17 @@ class FDU_Admin {
         ];
     }
     
-    /**
-     * ثبت هوک‌ها
-     */
     private function init_hooks() {
         add_action('admin_menu', [$this, 'add_menu_page']);
         add_action('admin_init', [$this, 'register_settings']);
         add_action('admin_enqueue_scripts', [$this, 'enqueue_assets']);
         
-        // Settings link in plugins list
         add_filter(
             'plugin_action_links_' . plugin_basename(FDU_PLUGIN_FILE),
             [$this, 'add_settings_link']
         );
     }
     
-    /**
-     * افزودن صفحه به منو
-     */
     public function add_menu_page() {
         add_options_page(
             'Files.ir Wordpress Backup',
@@ -81,9 +68,6 @@ class FDU_Admin {
         );
     }
     
-    /**
-     * ثبت تنظیمات
-     */
     public function register_settings() {
         register_setting(
             $this->option_group, 
@@ -93,44 +77,27 @@ class FDU_Admin {
             ]
         );
         
-        // API Tab
         $this->register_api_settings();
-        
-        // Database Tab
         $this->register_database_settings();
-        
-        // Files Tab
         $this->register_files_settings();
-        
-        // Schedule Tab
         $this->register_schedule_settings();
-        
-        // Advanced Tab
         $this->register_advanced_settings();
     }
     
-    /**
-     * تنظیمات API
-     */
     private function register_api_settings() {
         add_settings_section(
             'fdu_api_section',
             'تنظیمات Files.ir API',
             function() {
-                echo '<p>اطلاعات API خود را از پنل Files.ir وارد کنید.</p>';
+                echo '<p>توکن API خود را از <a href="https://my.files.ir/account-settings" target="_blank">تنظیمات حساب Files.ir</a> دریافت کنید.</p>';
             },
             $this->page_slug . '_api'
         );
         
         $fields = [
-            ['endpoint_url', 'آدرس Endpoint', 'text'],
-            ['http_method', 'HTTP Method', 'select', ['POST'=>'POST', 'PUT'=>'PUT']],
-            ['header_name', 'نام هدر اعتبارسنجی', 'text'],
-            ['token_prefix', 'پیشوند مقدار هدر', 'text'],
-            ['token', 'توکن/API Key', 'password'],
-            ['multipart_field', 'نام فیلد فایل (Multipart)', 'text'],
-            ['dest_relative_path', 'پوشه مقصد (relativePath)', 'text'],
-            ['extra_fields', 'فیلدهای اضافه (JSON)', 'textarea'],
+            ['token', 'توکن API', 'password'],
+            ['dest_relative_path', 'پوشه مقصد (اختیاری)', 'text'],
+            ['extra_fields', 'فیلدهای اضافه - JSON (اختیاری)', 'textarea'],
         ];
         
         foreach ($fields as $field) {
@@ -145,9 +112,6 @@ class FDU_Admin {
         }
     }
     
-    /**
-     * تنظیمات دیتابیس
-     */
     private function register_database_settings() {
         add_settings_section(
             'fdu_database_section',
@@ -174,9 +138,6 @@ class FDU_Admin {
         }
     }
     
-    /**
-     * تنظیمات فایل‌ها
-     */
     private function register_files_settings() {
         add_settings_section(
             'fdu_files_section',
@@ -208,9 +169,6 @@ class FDU_Admin {
         }
     }
     
-    /**
-     * تنظیمات زمان‌بندی
-     */
     private function register_schedule_settings() {
         add_settings_section(
             'fdu_schedule_section',
@@ -243,9 +201,6 @@ class FDU_Admin {
         }
     }
     
-    /**
-     * تنظیمات پیشرفته
-     */
     private function register_advanced_settings() {
         add_settings_section(
             'fdu_advanced_section',
@@ -275,49 +230,33 @@ class FDU_Admin {
         }
     }
     
-    /**
-     * Sanitize و merge تنظیمات
-     * این متد تنظیمات جدید رو با قدیمی merge می‌کنه
-     * تا فیلدهای تب‌های دیگه پاک نشن
-     * 
-     * @param array $input تنظیمات جدید
-     * @return array تنظیمات merged
-     */
     public function sanitize_settings($input) {
-        // دریافت تنظیمات قبلی
         $old_settings = get_option($this->option_name, []);
         
-        // اگر input خالی باشه، همون قدیمی رو برگردون
         if (empty($input)) {
             return $old_settings;
         }
         
-        // Merge کردن: تنظیمات جدید روی قدیمی override می‌شه
         $merged = array_merge($old_settings, $input);
         
-        // Sanitize کردن مقادیر
+        $textarea_fields = ['include_paths', 'exclude_patterns', 'extra_fields'];
+        $no_trim_fields = ['token_prefix'];
+        
         foreach ($merged as $key => $value) {
-            if (is_string($value)) {
+            if (in_array($key, $textarea_fields)) {
+                $merged[$key] = sanitize_textarea_field($value);
+            } elseif (in_array($key, $no_trim_fields)) {
+                $merged[$key] = stripslashes($value);
+            } elseif (is_string($value)) {
                 $merged[$key] = sanitize_text_field($value);
             } elseif (is_array($value)) {
                 $merged[$key] = array_map('sanitize_text_field', $value);
             }
         }
         
-        // فیلدهای textarea رو جداگانه sanitize می‌کنیم
-        $textarea_fields = ['include_paths', 'exclude_patterns', 'extra_fields'];
-        foreach ($textarea_fields as $field) {
-            if (isset($input[$field])) {
-                $merged[$field] = sanitize_textarea_field($input[$field]);
-            }
-        }
-        
         return $merged;
     }
     
-    /**
-     * رندر فیلد
-     */
     public function render_field($args) {
         $options = get_option($this->option_name, []);
         list($key, $label, $type) = $args;
@@ -338,6 +277,9 @@ class FDU_Admin {
                     $name,
                     esc_attr($value)
                 );
+                if ($key === 'dest_relative_path') {
+                    echo '<p class="description">مثال: wp-backups یا wp-backups/mysite (خالی = ریشه)</p>';
+                }
                 break;
                 
             case 'checkbox':
@@ -357,6 +299,9 @@ class FDU_Admin {
                     $name,
                     esc_textarea($value)
                 );
+                if ($key === 'extra_fields') {
+                    echo '<p class="description">مثال: {"parentId": 12345}</p>';
+                }
                 break;
                 
             case 'select':
@@ -374,9 +319,6 @@ class FDU_Admin {
         }
     }
     
-    /**
-     * رندر صفحه تنظیمات
-     */
     public function render_page() {
         if (!current_user_can('manage_options')) {
             return;
@@ -384,13 +326,9 @@ class FDU_Admin {
         
         $active_tab = isset($_GET['tab']) ? sanitize_key($_GET['tab']) : 'api';
         
-        // Load view
         include dirname(__FILE__) . '/views/settings-page.php';
     }
     
-    /**
-     * لود CSS و JS
-     */
     public function enqueue_assets($hook) {
         if ('settings_page_' . $this->page_slug !== $hook) {
             return;
@@ -412,9 +350,6 @@ class FDU_Admin {
         );
     }
     
-    /**
-     * افزودن لینک تنظیمات به لیست افزونه‌ها
-     */
     public function add_settings_link($links) {
         $url = admin_url('options-general.php?page=' . $this->page_slug);
         array_unshift(

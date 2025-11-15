@@ -116,12 +116,6 @@ class FDU_Uploader {
             ? $this->options['upload_method'] 
             : 'stream';
         
-        // بررسی دسترسی به cURL برای stream/chunked
-        if (!function_exists('curl_init')) {
-            FDU_Logger::warning('cURL در دسترس نیست. سوییچ به روش ساده...');
-            return 'simple';
-        }
-        
         return $method;
     }
     
@@ -133,81 +127,60 @@ class FDU_Uploader {
      * @return bool
      */
     private function upload_simple($file_path, $metadata) {
+        // چک کردن دسترسی به cURL و CURLFile
+        if (!function_exists('curl_init') || !class_exists('CURLFile')) {
+            FDU_Logger::error('cURL یا CURLFile در دسترس نیست');
+            return false;
+        }
+        
         $filename = basename($file_path);
         $mime = $this->get_mime_type($file_path);
         
-        // ساخت فیلدها
+        // ساخت فیلدها - فقط relativePath
         $fields = $this->prepare_fields($filename, $metadata);
         
-        // سعی با روش‌های مختلف
-        $strategies = ['normal'];
+        // فایل
+        $fields[$this->options['multipart_field']] = new CURLFile($file_path, $mime, $filename);
         
-        if (!empty($this->options['compat_mode'])) {
-            $strategies[] = 'minimal';
+        // آماده‌سازی هدرها
+        $headers = $this->prepare_curl_headers();
+        
+        // ارسال با cURL
+        $ch = curl_init();
+        
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $this->options['endpoint_url'],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $fields,
+            CURLOPT_HTTPHEADER => $headers,
+            CURLOPT_TIMEOUT => 900,
+            CURLOPT_CONNECTTIMEOUT => 30,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+        ]);
+        
+        $response_body = curl_exec($ch);
+        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        
+        curl_close($ch);
+        
+        if ($error) {
+            FDU_Logger::error('خطای cURL: ' . $error);
+            return false;
         }
         
-        foreach ($strategies as $strategy) {
-            FDU_Logger::log("تلاش با strategy={$strategy}");
-            
-            if ($this->send_simple_request($file_path, $filename, $mime, $fields, $strategy)) {
-                return true;
-            }
+        FDU_Logger::log('HTTP Status: ' . $http_code);
+        
+        if ($http_code >= 200 && $http_code < 300) {
+            return true;
         }
+        
+        FDU_Logger::error('خطا در آپلود: HTTP ' . $http_code);
+        FDU_Logger::log('پاسخ: ' . substr($response_body, 0, 500));
         
         return false;
-    }
-    
-    /**
-     * ارسال درخواست ساده
-     * 
-     * @param string $file_path
-     * @param string $filename
-     * @param string $mime
-     * @param array $fields
-     * @param string $strategy
-     * @return bool
-     */
-    private function send_simple_request($file_path, $filename, $mime, $fields, $strategy) {
-        $use_curlfile = class_exists('CURLFile') && 
-                        empty($this->options['force_manual_multipart']);
-        
-        // حذف فیلدهای اضافی در حالت minimal
-        if ($strategy === 'minimal') {
-            $fields = array_intersect_key($fields, array_flip(['relativePath']));
-        }
-        
-        $headers = $this->prepare_headers();
-        
-        // آماده‌سازی body
-        if ($use_curlfile) {
-            $body = $fields;
-            $body[$this->options['multipart_field']] = new CURLFile($file_path, $mime, $filename);
-            
-            $args = [
-                'method' => $this->options['http_method'],
-                'timeout' => 900,
-                'headers' => $headers,
-                'body' => $body,
-            ];
-        } else {
-            // ساخت manual multipart
-            $boundary = wp_generate_password(24, false, false);
-            $body = $this->build_multipart_body($fields, $file_path, $filename, $mime, $boundary);
-            
-            $headers['Content-Type'] = 'multipart/form-data; boundary=' . $boundary;
-            
-            $args = [
-                'method' => $this->options['http_method'],
-                'timeout' => 900,
-                'headers' => $headers,
-                'body' => $body,
-            ];
-        }
-        
-        // ارسال درخواست
-        $response = wp_remote_request($this->options['endpoint_url'], $args);
-        
-        return $this->handle_response($response);
     }
     
     /**
@@ -218,29 +191,24 @@ class FDU_Uploader {
      * @return bool
      */
     private function upload_stream($file_path, $metadata) {
-        if (!class_exists('CURLFile')) {
-            FDU_Logger::warning('CURLFile در دسترس نیست');
-            return $this->upload_simple($file_path, $metadata);
+        if (!function_exists('curl_init') || !class_exists('CURLFile')) {
+            FDU_Logger::error('cURL یا CURLFile در دسترس نیست');
+            return false;
         }
         
         $filename = basename($file_path);
         $mime = $this->get_mime_type($file_path);
         $file_size = filesize($file_path);
         
+        FDU_Logger::log('شروع Stream Upload: ' . number_format($file_size/1048576, 2) . 'MB');
+        
         // ساخت فیلدها
         $fields = $this->prepare_fields($filename, $metadata);
         $fields[$this->options['multipart_field']] = new CURLFile($file_path, $mime, $filename);
         
         // آماده‌سازی هدرها
-        $token = $this->options['token'];
-        $auth_header = $this->options['header_name'] . ': ' . 
-                      $this->options['token_prefix'] . $token;
-        
-        $headers = [
-            $auth_header,
-            'Accept: application/json',
-            'Expect:',
-        ];
+        $headers = $this->prepare_curl_headers();
+        $headers[] = 'Expect:';
         
         // ارسال با cURL
         $ch = curl_init();
@@ -305,6 +273,11 @@ class FDU_Uploader {
      * @return bool
      */
     private function upload_chunked($file_path, $metadata) {
+        if (!function_exists('curl_init')) {
+            FDU_Logger::error('cURL در دسترس نیست');
+            return false;
+        }
+        
         $filename = basename($file_path);
         $mime = $this->get_mime_type($file_path);
         $file_size = filesize($file_path);
@@ -417,10 +390,10 @@ class FDU_Uploader {
         $body .= $chunk_data . $eol;
         $body .= "--{$boundary}--{$eol}";
         
-        // ارسال با cURL
-        $token = $this->options['token'];
-        $auth_header = $this->options['header_name'] . ': ' . 
-                      $this->options['token_prefix'] . $token;
+        // آماده‌سازی هدرها
+        $headers = $this->prepare_curl_headers();
+        $headers[] = 'Content-Type: multipart/form-data; boundary=' . $boundary;
+        $headers[] = 'Expect:';
         
         $ch = curl_init();
         
@@ -429,14 +402,11 @@ class FDU_Uploader {
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => $body,
-            CURLOPT_HTTPHEADER => [
-                $auth_header,
-                'Content-Type: multipart/form-data; boundary=' . $boundary,
-                'Accept: application/json',
-                'Expect:',
-            ],
+            CURLOPT_HTTPHEADER => $headers,
             CURLOPT_TIMEOUT => 600,
             CURLOPT_CONNECTTIMEOUT => 30,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
         ]);
         
         $response = curl_exec($ch);
@@ -469,39 +439,10 @@ class FDU_Uploader {
     private function prepare_fields($filename, $metadata = []) {
         $fields = [];
         
-        // فیلدهای پایه
-        $fields['site'] = home_url();
-        $fields['db'] = DB_NAME;
-        $fields['created_at'] = wp_date('c');
-        
-        // متادیتای سفارشی
-        if (!empty($metadata)) {
-            $fields = array_merge($fields, $metadata);
-        }
-        
-        // فیلدهای اضافی از تنظیمات
-        if (!empty($this->options['extra_fields'])) {
-            $extra = json_decode($this->options['extra_fields'], true);
-            if (is_array($extra)) {
-                foreach ($extra as $key => $value) {
-                    $fields[$key] = (string) $value;
-                }
-            }
-        }
-        
-        // مسیر مقصد
+        // relativePath
         $dest = trim($this->options['dest_relative_path']);
         if (!empty($dest)) {
-            // اگر dest فولدر باشه، filename رو اضافه می‌کنیم
-            $last_part = basename($dest);
-            
-            if (strpos($last_part, '.') === false) {
-                // احتمالاً فولدر است
-                $fields['relativePath'] = rtrim($dest, '/\\') . '/' . $filename;
-            } else {
-                // احتمالاً مسیر کامل فایل است
-                $fields['relativePath'] = $dest;
-            }
+            $fields['relativePath'] = rtrim($dest, '/\\') . '/' . $filename;
         } else {
             $fields['relativePath'] = $filename;
         }
@@ -510,83 +451,22 @@ class FDU_Uploader {
     }
     
     /**
-     * آماده‌سازی هدرها
+     * آماده‌سازی هدرها برای cURL
      * 
      * @return array
      */
-    private function prepare_headers() {
-        $headers = [
-            'Accept' => 'application/json',
-            'Expect' => '',
-        ];
+    private function prepare_curl_headers() {
+        $headers = [];
         
         // هدر Authentication
         if (!empty($this->options['header_name']) && !empty($this->options['token'])) {
-            $headers[$this->options['header_name']] = 
-                $this->options['token_prefix'] . $this->options['token'];
+            $headers[] = $this->options['header_name'] . ': ' . 
+                        $this->options['token_prefix'] . $this->options['token'];
         }
+        
+        $headers[] = 'Accept: application/json';
         
         return $headers;
-    }
-    
-    /**
-     * ساخت multipart body دستی
-     * 
-     * @param array $fields
-     * @param string $file_path
-     * @param string $filename
-     * @param string $mime
-     * @param string $boundary
-     * @return string
-     */
-    private function build_multipart_body($fields, $file_path, $filename, $mime, $boundary) {
-        $eol = "\r\n";
-        $body = '';
-        
-        // فیلدهای معمولی
-        foreach ($fields as $name => $value) {
-            $body .= "--{$boundary}{$eol}";
-            $body .= "Content-Disposition: form-data; name=\"{$name}\"{$eol}{$eol}";
-            $body .= "{$value}{$eol}";
-        }
-        
-        // فایل
-        $field_name = $this->options['multipart_field'];
-        $body .= "--{$boundary}{$eol}";
-        $body .= "Content-Disposition: form-data; name=\"{$field_name}\"; filename=\"{$filename}\"{$eol}";
-        $body .= "Content-Type: {$mime}{$eol}{$eol}";
-        $body .= file_get_contents($file_path);
-        $body .= $eol . "--{$boundary}--{$eol}";
-        
-        return $body;
-    }
-    
-    /**
-     * پردازش پاسخ سرور
-     * 
-     * @param array|WP_Error $response
-     * @return bool
-     */
-    private function handle_response($response) {
-        if (is_wp_error($response)) {
-            FDU_Logger::error('خطای WP: ' . $response->get_error_message());
-            return false;
-        }
-        
-        $http_code = wp_remote_retrieve_response_code($response);
-        $body = wp_remote_retrieve_body($response);
-        
-        FDU_Logger::log('HTTP Status: ' . $http_code);
-        
-        if ($http_code >= 200 && $http_code < 300) {
-            return true;
-        }
-        
-        // لاگ خطا
-        FDU_Logger::error('خطا در آپلود: HTTP ' . $http_code);
-        FDU_Logger::log('پاسخ: ' . substr($body, 0, 500));
-        
-        return false;
     }
     
     /**

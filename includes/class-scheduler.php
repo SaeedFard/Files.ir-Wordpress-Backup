@@ -13,43 +13,33 @@ class FDU_Scheduler {
     
     const CRON_HOOK = 'fdu_cron_upload_event';
     const ASYNC_HOOK = 'fdu_async_run_event';
+    const PING_HOOK = 'fdu_self_ping_event';
     
-    /**
-     * ثبت هوک‌های زمان‌بندی
-     */
     public static function init() {
-        add_action(self::CRON_HOOK, [__CLASS__, 'run_backup']);
-        add_action(self::ASYNC_HOOK, [__CLASS__, 'run_backup']);
         add_action('fdu_single_test_event', [__CLASS__, 'test_event']);
+        add_action(self::PING_HOOK, [__CLASS__, 'self_ping']);
     }
     
-    /**
-     * زمان‌بندی بر اساس تنظیمات
-     * 
-     * @param array $options تنظیمات افزونه
-     */
     public static function schedule($options) {
-        // پاک کردن زمان‌بندی قبلی
         wp_clear_scheduled_hook(self::CRON_HOOK);
+        wp_clear_scheduled_hook(self::PING_HOOK);
         
-        // محاسبه زمان اجرای بعدی
         $next_time = self::calculate_next_run($options);
         
-        // ثبت رویداد جدید
         wp_schedule_single_event($next_time, self::CRON_HOOK);
+        
+        // زمان‌بندی self-ping: 30 ثانیه بعد از زمان اصلی
+        wp_schedule_single_event($next_time + 30, self::PING_HOOK);
         
         FDU_Logger::log(
             'زمان‌بندی بازتنظیم شد. اجرای بعدی: ' . 
             get_date_from_gmt(gmdate('Y-m-d H:i:s', $next_time), 'Y-m-d H:i:s')
         );
+        
+        // تریگر WP-Cron برای اطمینان از اجرا
+        self::trigger_cron();
     }
     
-    /**
-     * محاسبه زمان اجرای بعدی
-     * 
-     * @param array $options
-     * @return int Unix timestamp
-     */
     public static function calculate_next_run($options) {
         $tz = wp_timezone();
         $now = new DateTimeImmutable('now', $tz);
@@ -65,13 +55,9 @@ class FDU_Scheduler {
         }
     }
     
-    /**
-     * محاسبه زمان‌بندی روزانه
-     */
     private static function calculate_daily($now, $hour, $min) {
         $target = $now->setTime($hour, $min, 0);
         
-        // اگر زمان هدف گذشته، به فردا می‌رویم
         if ($target <= $now) {
             $target = $target->modify('+1 day');
         }
@@ -79,25 +65,19 @@ class FDU_Scheduler {
         return $target->getTimestamp();
     }
     
-    /**
-     * محاسبه زمان‌بندی هفتگی
-     */
     private static function calculate_weekly($now, $hour, $min, $options) {
-        $wday = isset($options['weekday']) ? intval($options['weekday']) : 6; // شنبه
+        $wday = isset($options['weekday']) ? intval($options['weekday']) : 6;
         $today_w = intval($now->format('w'));
         
         $days_ahead = ($wday - $today_w + 7) % 7;
         
         $target = $now->setTime($hour, $min, 0);
         
-        // اگر همون امروز است
         if ($days_ahead === 0) {
-            // اگر ساعت گذشته، بریم هفته بعد
             if ($target <= $now) {
                 $days_ahead = 7;
             }
         } else {
-            // برای روزهای دیگر، چک کنیم که زمان از الان جلوتر باشه
             $test_target = $target->modify("+{$days_ahead} days");
             if ($test_target <= $now) {
                 $days_ahead += 7;
@@ -109,28 +89,27 @@ class FDU_Scheduler {
         return $final->getTimestamp();
     }
     
-    /**
-     * زمان‌بندی پس‌زمینه (بعد از 5 ثانیه)
-     */
     public static function schedule_async() {
         $ts = time() + 5;
         wp_schedule_single_event($ts, self::ASYNC_HOOK);
+        
+        // Self-ping برای async
+        wp_schedule_single_event($ts + 10, self::PING_HOOK);
         
         FDU_Logger::log(
             'اجرای پس‌زمینه زمان‌بندی شد برای ' .
             get_date_from_gmt(gmdate('Y-m-d H:i:s', $ts), 'Y-m-d H:i:s')
         );
         
-        // تریگر کران
         self::trigger_cron();
     }
     
-    /**
-     * زمان‌بندی تست (بعد از 2 دقیقه)
-     */
     public static function schedule_test() {
         $ts = time() + 120;
         wp_schedule_single_event($ts, 'fdu_single_test_event');
+        
+        // Self-ping برای تست
+        wp_schedule_single_event($ts + 10, self::PING_HOOK);
         
         FDU_Logger::log(
             'تست زمان‌بندی شد برای ' .
@@ -140,9 +119,6 @@ class FDU_Scheduler {
         self::trigger_cron();
     }
     
-    /**
-     * تریگر دستی WP-Cron
-     */
     public static function trigger_cron() {
         if (!function_exists('spawn_cron')) {
             require_once ABSPATH . 'wp-includes/cron.php';
@@ -150,7 +126,6 @@ class FDU_Scheduler {
         
         @spawn_cron();
         
-        // Loopback non-blocking
         wp_remote_get(
             site_url('wp-cron.php?doing_wp_cron=' . microtime(true)),
             ['timeout' => 0.01, 'blocking' => false, 'sslverify' => false]
@@ -158,29 +133,17 @@ class FDU_Scheduler {
     }
     
     /**
-     * اجرای بکاپ (callback برای هوک‌های کران)
+     * Self-ping: درخواست به سایت برای اجرای WP-Cron
      */
-    public static function run_backup() {
-        // این متد توسط کلاس اصلی override می‌شود
-        do_action('fdu_before_backup');
-        
-        // اینجا کلاس Backup کار خودش رو انجام میده
-        
-        do_action('fdu_after_backup');
+    public static function self_ping() {
+        FDU_Logger::log('Self-ping: تریگر WP-Cron برای اجرای رویدادهای معوق...');
+        self::trigger_cron();
     }
     
-    /**
-     * رویداد تست
-     */
     public static function test_event() {
         FDU_Logger::success('✅ fdu_single_test_event اجرا شد.');
     }
     
-    /**
-     * وضعیت زمان‌بندی فعلی
-     * 
-     * @return array
-     */
     public static function get_status() {
         $next = wp_next_scheduled(self::CRON_HOOK);
         $next_async = wp_next_scheduled(self::ASYNC_HOOK);
@@ -198,12 +161,10 @@ class FDU_Scheduler {
         ];
     }
     
-    /**
-     * پاک کردن تمام زمان‌بندی‌ها
-     */
     public static function clear_all() {
         wp_clear_scheduled_hook(self::CRON_HOOK);
         wp_clear_scheduled_hook(self::ASYNC_HOOK);
+        wp_clear_scheduled_hook(self::PING_HOOK);
         wp_clear_scheduled_hook('fdu_single_test_event');
     }
 }
