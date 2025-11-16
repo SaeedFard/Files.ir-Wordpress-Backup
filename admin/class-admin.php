@@ -40,6 +40,10 @@ class FDU_Admin {
                 'title' => 'زمان‌بندی',
                 'icon'  => 'dashicons-clock',
             ],
+			'restore' => [
+			    'title' => 'بازیابی',
+			    'icon'  => 'dashicons-backup',
+			],
             'advanced' => [
                 'title' => 'پیشرفته',
                 'icon'  => 'dashicons-admin-settings',

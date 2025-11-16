@@ -24,6 +24,7 @@ require_once FDU_PLUGIN_DIR . 'includes/class-scheduler.php';
 require_once FDU_PLUGIN_DIR . 'includes/class-backup-database.php';
 require_once FDU_PLUGIN_DIR . 'includes/class-backup-files.php';
 require_once FDU_PLUGIN_DIR . 'includes/class-uploader.php';
+require_once FDU_PLUGIN_DIR . 'includes/class-restore-manager.php';
 
 // بارگذاری کلاس Admin فقط در بخش مدیریت
 if (is_admin()) {
@@ -32,8 +33,7 @@ if (is_admin()) {
 
 /**
  * کلاس اصلی افزونه
- * 
- * @package Files_IR_Backup
+ * * @package Files_IR_Backup
  * @since 1.2.0
  */
 class FDU_Plugin {
@@ -76,6 +76,13 @@ class FDU_Plugin {
         add_action('admin_post_fdu_regen_key', [$this, 'handle_regen_key']);
         add_action('admin_post_nopriv_fdu_worker', [$this, 'handle_worker']);
         
+		add_action('admin_post_fdu_restore_db', [$this, 'handle_restore_db']);
+		add_action('admin_post_fdu_restore_files', [$this, 'handle_restore_files']);
+		add_action('admin_post_fdu_restore_db_remote', [$this, 'handle_restore_db_remote']);
+		add_action('admin_post_fdu_restore_files_remote', [$this, 'handle_restore_files_remote']);
+		add_action('admin_post_fdu_download_backup', [$this, 'handle_download_backup']);
+		add_action('admin_post_fdu_download_remote', [$this, 'handle_download_remote']);
+		
         // بازتنظیم خودکار زمان‌بندی هنگام تغییر تنظیمات
         add_action('updated_option', [$this, 'maybe_reschedule'], 10, 3);
         
@@ -113,8 +120,7 @@ class FDU_Plugin {
     
     /**
      * دریافت تنظیمات
-     * 
-     * @return array
+     * * @return array
      */
     private function get_options() {
     $defaults = [
@@ -534,6 +540,258 @@ class FDU_Plugin {
         }
         
         wp_mail($email, $subject, $message);
+    }
+    
+    // ========================================
+    // Restore and Download Handlers (Added from restore-handlers.php)
+    // ========================================
+
+    /**
+     * بازیابی دیتابیس از فایل محلی
+     */
+    public function handle_restore_db() {
+        if (!current_user_can('manage_options') || !check_admin_referer('fdu_restore')) {
+            wp_die('Forbidden');
+        }
+        
+        $filename = isset($_GET['file']) ? sanitize_file_name($_GET['file']) : '';
+        
+        if (empty($filename)) {
+            wp_die('فایل مشخص نشده است');
+        }
+        
+        $upload_dir = wp_upload_dir();
+        $backup_dir = trailingslashit($upload_dir['basedir']) . 'files-ir-wordpress-backup';
+        $file_path = $backup_dir . '/' . $filename;
+        
+        if (!file_exists($file_path)) {
+            wp_die('فایل یافت نشد');
+        }
+        
+        $opts = $this->get_options();
+        $restore_manager = new FDU_Restore_Manager($opts);
+        
+        FDU_Logger::log('=== بازیابی دیتابیس توسط کاربر ===');
+        $result = $restore_manager->restore_database($file_path);
+        
+        if ($result) {
+            wp_safe_redirect(add_query_arg(
+                ['page' => 'files-ir-wordpress-backup', 'tab' => 'restore', 'restored' => 'db'],
+                admin_url('options-general.php')
+            ));
+        } else {
+            wp_safe_redirect(add_query_arg(
+                ['page' => 'files-ir-wordpress-backup', 'tab' => 'restore', 'error' => 'db'],
+                admin_url('options-general.php')
+            ));
+        }
+        exit;
+    }
+
+    /**
+     * بازیابی فایل‌ها از آرشیو محلی
+     */
+    public function handle_restore_files() {
+        if (!current_user_can('manage_options') || !check_admin_referer('fdu_restore')) {
+            wp_die('Forbidden');
+        }
+        
+        $filename = isset($_GET['file']) ? sanitize_file_name($_GET['file']) : '';
+        
+        if (empty($filename)) {
+            wp_die('فایل مشخص نشده است');
+        }
+        
+        $upload_dir = wp_upload_dir();
+        $backup_dir = trailingslashit($upload_dir['basedir']) . 'files-ir-wordpress-backup';
+        $file_path = $backup_dir . '/' . $filename;
+        
+        if (!file_exists($file_path)) {
+            wp_die('فایل یافت نشد');
+        }
+        
+        $opts = $this->get_options();
+        $restore_manager = new FDU_Restore_Manager($opts);
+        
+        FDU_Logger::log('=== بازیابی فایل‌ها توسط کاربر ===');
+        $result = $restore_manager->restore_files($file_path);
+        
+        if ($result) {
+            wp_safe_redirect(add_query_arg(
+                ['page' => 'files-ir-wordpress-backup', 'tab' => 'restore', 'restored' => 'files'],
+                admin_url('options-general.php')
+            ));
+        } else {
+            wp_safe_redirect(add_query_arg(
+                ['page' => 'files-ir-wordpress-backup', 'tab' => 'restore', 'error' => 'files'],
+                admin_url('options-general.php')
+            ));
+        }
+        exit;
+    }
+
+    /**
+     * دانلود و بازیابی دیتابیس از Files.ir
+     */
+    public function handle_restore_db_remote() {
+        if (!current_user_can('manage_options') || !check_admin_referer('fdu_restore')) {
+            wp_die('Forbidden');
+        }
+        
+        $entry_id = isset($_GET['entry_id']) ? intval($_GET['entry_id']) : 0;
+        $filename = isset($_GET['filename']) ? sanitize_file_name($_GET['filename']) : '';
+        
+        if (empty($entry_id) || empty($filename)) {
+            wp_die('اطلاعات فایل نامعتبر است');
+        }
+        
+        $opts = $this->get_options();
+        $restore_manager = new FDU_Restore_Manager($opts);
+        
+        FDU_Logger::log('=== دانلود و بازیابی دیتابیس از Files.ir ===');
+        
+        // دانلود فایل
+        $local_file = $restore_manager->download_from_files_ir($entry_id, $filename);
+        
+        if (!$local_file) {
+            wp_safe_redirect(add_query_arg(
+                ['page' => 'files-ir-wordpress-backup', 'tab' => 'restore', 'error' => 'download'],
+                admin_url('options-general.php')
+            ));
+            exit;
+        }
+        
+        // بازیابی
+        $result = $restore_manager->restore_database($local_file);
+        
+        if ($result) {
+            wp_safe_redirect(add_query_arg(
+                ['page' => 'files-ir-wordpress-backup', 'tab' => 'restore', 'restored' => 'db-remote'],
+                admin_url('options-general.php')
+            ));
+        } else {
+            wp_safe_redirect(add_query_arg(
+                ['page' => 'files-ir-wordpress-backup', 'tab' => 'restore', 'error' => 'db'],
+                admin_url('options-general.php')
+            ));
+        }
+        exit;
+    }
+
+    /**
+     * دانلود و بازیابی فایل‌ها از Files.ir
+     */
+    public function handle_restore_files_remote() {
+        if (!current_user_can('manage_options') || !check_admin_referer('fdu_restore')) {
+            wp_die('Forbidden');
+        }
+        
+        $entry_id = isset($_GET['entry_id']) ? intval($_GET['entry_id']) : 0;
+        $filename = isset($_GET['filename']) ? sanitize_file_name($_GET['filename']) : '';
+        
+        if (empty($entry_id) || empty($filename)) {
+            wp_die('اطلاعات فایل نامعتبر است');
+        }
+        
+        $opts = $this->get_options();
+        $restore_manager = new FDU_Restore_Manager($opts);
+        
+        FDU_Logger::log('=== دانلود و بازیابی فایل‌ها از Files.ir ===');
+        
+        // دانلود فایل
+        $local_file = $restore_manager->download_from_files_ir($entry_id, $filename);
+        
+        if (!$local_file) {
+            wp_safe_redirect(add_query_arg(
+                ['page' => 'files-ir-wordpress-backup', 'tab' => 'restore', 'error' => 'download'],
+                admin_url('options-general.php')
+            ));
+            exit;
+        }
+        
+        // بازیابی
+        $result = $restore_manager->restore_files($local_file);
+        
+        if ($result) {
+            wp_safe_redirect(add_query_arg(
+                ['page' => 'files-ir-wordpress-backup', 'tab' => 'restore', 'restored' => 'files-remote'],
+                admin_url('options-general.php')
+            ));
+        } else {
+            wp_safe_redirect(add_query_arg(
+                ['page' => 'files-ir-wordpress-backup', 'tab' => 'restore', 'error' => 'files'],
+                admin_url('options-general.php')
+            ));
+        }
+        exit;
+    }
+
+    /**
+     * دانلود فایل بکاپ محلی
+     */
+    public function handle_download_backup() {
+        if (!current_user_can('manage_options') || !check_admin_referer('fdu_download')) {
+            wp_die('Forbidden');
+        }
+        
+        $filename = isset($_GET['file']) ? sanitize_file_name($_GET['file']) : '';
+        
+        if (empty($filename)) {
+            wp_die('فایل مشخص نشده است');
+        }
+        
+        $upload_dir = wp_upload_dir();
+        $backup_dir = trailingslashit($upload_dir['basedir']) . 'files-ir-wordpress-backup';
+        $file_path = $backup_dir . '/' . $filename;
+        
+        if (!file_exists($file_path)) {
+            wp_die('فایل یافت نشد');
+        }
+        
+        // ارسال فایل برای دانلود
+        header('Content-Type: application/octet-stream');
+        header('Content-Disposition: attachment; filename="' . $filename . '"');
+        header('Content-Length: ' . filesize($file_path));
+        header('Cache-Control: no-cache');
+        
+        readfile($file_path);
+        exit;
+    }
+
+    /**
+     * دانلود فایل از Files.ir (بدون بازیابی)
+     */
+    public function handle_download_remote() {
+        if (!current_user_can('manage_options') || !check_admin_referer('fdu_download')) {
+            wp_die('Forbidden');
+        }
+        
+        $entry_id = isset($_GET['entry_id']) ? intval($_GET['entry_id']) : 0;
+        $filename = isset($_GET['filename']) ? sanitize_file_name($_GET['filename']) : '';
+        
+        if (empty($entry_id) || empty($filename)) {
+            wp_die('اطلاعات فایل نامعتبر است');
+        }
+        
+        $opts = $this->get_options();
+        $restore_manager = new FDU_Restore_Manager($opts);
+        
+        FDU_Logger::log('=== دانلود فایل از Files.ir ===');
+        
+        $local_file = $restore_manager->download_from_files_ir($entry_id, $filename);
+        
+        if ($local_file) {
+            wp_safe_redirect(add_query_arg(
+                ['page' => 'files-ir-wordpress-backup', 'tab' => 'restore', 'downloaded' => '1'],
+                admin_url('options-general.php')
+            ));
+        } else {
+            wp_safe_redirect(add_query_arg(
+                ['page' => 'files-ir-wordpress-backup', 'tab' => 'restore', 'error' => 'download'],
+                admin_url('options-general.php')
+            ));
+        }
+        exit;
     }
 }
 
