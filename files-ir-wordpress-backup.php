@@ -3,7 +3,7 @@
  * Plugin Name: Files.ir Wordpress Backup
  * Plugin URI: https://github.com/SaeedFard
  * Description: بکاپ دیتابیس و فایل‌های وردپرس + آپلود به Files.ir
- * Version: 1.2.0
+ * Version: 1.3.0
  * Author: Saeed Fard
  * Author URI: https://github.com/SaeedFard
  * License: GPLv2 or later
@@ -13,7 +13,7 @@
 if (!defined('ABSPATH')) exit;
 
 // تعریف ثابت‌های افزونه
-define('FDU_VERSION', '1.2.0');
+define('FDU_VERSION', '1.3.0');
 define('FDU_PLUGIN_FILE', __FILE__);
 define('FDU_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('FDU_PLUGIN_URL', plugin_dir_url(__FILE__));
@@ -23,7 +23,9 @@ require_once FDU_PLUGIN_DIR . 'includes/class-logger.php';
 require_once FDU_PLUGIN_DIR . 'includes/class-scheduler.php';
 require_once FDU_PLUGIN_DIR . 'includes/class-backup-database.php';
 require_once FDU_PLUGIN_DIR . 'includes/class-backup-files.php';
-require_once FDU_PLUGIN_DIR . 'includes/class-uploader.php';
+require_once FDU_PLUGIN_DIR . 'includes/class-uploader.php';          // legacy (rollback only)
+require_once FDU_PLUGIN_DIR . 'includes/class-uploader-v2.php';       // new upload API client
+require_once FDU_PLUGIN_DIR . 'includes/class-folder-manager.php';    // parentId resolver
 require_once FDU_PLUGIN_DIR . 'includes/class-restore-manager.php';
 
 // بارگذاری کلاس Admin فقط در بخش مدیریت
@@ -74,6 +76,7 @@ class FDU_Plugin {
         add_action('admin_post_fdu_clear_log', [$this, 'handle_clear_log']);
         add_action('admin_post_fdu_delete_log', [$this, 'handle_delete_log']);
         add_action('admin_post_fdu_regen_key', [$this, 'handle_regen_key']);
+        add_action('admin_post_fdu_reset_folder', [$this, 'handle_reset_folder_cache']);
         add_action('admin_post_nopriv_fdu_worker', [$this, 'handle_worker']);
         
 		add_action('admin_post_fdu_restore_db', [$this, 'handle_restore_db']);
@@ -136,6 +139,12 @@ class FDU_Plugin {
         'dest_relative_path'  => 'wp-backups',
         'extra_fields'        => '',
         
+        // V2 API (new upload flow)
+        'use_legacy_uploader' => 0,             // emergency rollback to /uploads
+        'parent_folder_path'  => 'wp-backups',  // human-readable destination
+        'parent_folder_id'    => 0,             // cached, set after first ensure
+        'tus_chunk_size_mb'   => 8,             // for tus mode (server may use different)
+        
         'keep_local'          => 1,
         'retention'           => 7,
         'enable_files_backup' => 1,
@@ -167,6 +176,49 @@ class FDU_Plugin {
     
     return $opts;
 }
+    
+    /**
+     * Build an uploader instance based on settings.
+     * Returns FDU_Uploader_V2 by default; FDU_Uploader if legacy flag is on.
+     *
+     * @param array $opts
+     * @return object
+     */
+    private function build_uploader($opts) {
+        if (!empty($opts['use_legacy_uploader'])) {
+            FDU_Logger::warning('⚠ Using LEGACY uploader (rollback flag is on). Files >500MB will fail.');
+            return new FDU_Uploader($opts);
+        }
+        
+        return new FDU_Uploader_V2($opts);
+    }
+    
+    /**
+     * Resolve the destination parentId on Files.ir.
+     * Uses cached value if available; otherwise creates the folder hierarchy.
+     *
+     * @param array &$opts (passed by reference so the resolved id propagates)
+     * @return int|null parent_folder_id, or null if root upload was requested
+     */
+    private function resolve_parent_folder(&$opts) {
+        if (!empty($opts['use_legacy_uploader'])) {
+            // Legacy uploader uses dest_relative_path, not parentId
+            return null;
+        }
+        
+        $folder_mgr = new FDU_Folder_Manager($opts);
+        $parent_id = $folder_mgr->ensure_parent_folder();
+        
+        if ($parent_id === false) {
+            FDU_Logger::error('Could not resolve parent folder. Continuing with root upload.');
+            $parent_id = null;
+        }
+        
+        // Push back to opts so uploader sees the resolved id
+        $opts['parent_folder_id'] = is_int($parent_id) ? $parent_id : 0;
+        
+        return $parent_id;
+    }
     
     // ========================================
     // Handler Methods
@@ -267,8 +319,11 @@ class FDU_Plugin {
             
             FDU_Logger::log('فایل تست ساخته شد: ' . basename($gz) . ' (' . filesize($gz) . ' bytes)');
             
+            // Resolve destination folder (V2 only)
+            $this->resolve_parent_folder($opts);
+            
             // آپلود
-            $uploader = new FDU_Uploader($opts);
+            $uploader = $this->build_uploader($opts);
             $result = $uploader->upload($gz, ['type' => 'test']);
             
             if ($result) {
@@ -382,6 +437,25 @@ class FDU_Plugin {
     }
     
     /**
+     * Reset cached parent folder ID (forces re-creation/re-lookup on next backup)
+     */
+    public function handle_reset_folder_cache() {
+        if (!current_user_can('manage_options') || !check_admin_referer('fdu_reset_folder')) {
+            wp_die('Forbidden');
+        }
+        
+        $opts = get_option(self::OPT, []);
+        $old_id = isset($opts['parent_folder_id']) ? intval($opts['parent_folder_id']) : 0;
+        $opts['parent_folder_id'] = 0;
+        update_option(self::OPT, $opts);
+        
+        FDU_Logger::log("Parent folder cache reset (was: {$old_id})");
+        
+        wp_safe_redirect(wp_get_referer() ?: admin_url('options-general.php?page=files-ir-wordpress-backup&tab=api'));
+        exit;
+    }
+    
+    /**
      * اجرای Job بکاپ
      */
     public function run_backup_job() {
@@ -434,7 +508,10 @@ class FDU_Plugin {
             FDU_Logger::log('');
             FDU_Logger::log('شروع آپلود فایل‌ها به Files.ir...');
             
-            $uploader = new FDU_Uploader($opts);
+            // Resolve destination folder once before the upload loop
+            $this->resolve_parent_folder($opts);
+            
+            $uploader = $this->build_uploader($opts);
             
             foreach ($files_to_upload as $file) {
                 FDU_Logger::log('');
