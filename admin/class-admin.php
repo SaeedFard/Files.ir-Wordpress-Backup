@@ -216,10 +216,15 @@ class FDU_Admin {
         );
         
         $fields = [
-            ['upload_method', 'روش آپلود', 'select', ['stream'=>'Stream (توصیه)','chunk'=>'Chunked']],
-            ['chunk_size_mb', 'اندازه قطعه (MB)', 'number'],
-            ['compat_mode', 'حالت سازگاری', 'checkbox'],
-            ['force_manual_multipart', 'اجبار به multipart دستی', 'checkbox'],
+            // New API (v1.3.0)
+            ['parent_folder_path', 'پوشه مقصد در Files.ir', 'text'],
+            ['use_legacy_uploader', 'استفاده از API قدیمی (فقط برای rollback اضطراری)', 'checkbox'],
+            
+            // Legacy options (kept for compatibility, used only when use_legacy_uploader=1)
+            ['upload_method', 'روش آپلود قدیمی', 'select', ['stream'=>'Stream','chunk'=>'Chunked']],
+            ['chunk_size_mb', 'اندازه قطعه قدیمی (MB)', 'number'],
+            ['compat_mode', 'حالت سازگاری (قدیمی)', 'checkbox'],
+            ['force_manual_multipart', 'multipart دستی (قدیمی)', 'checkbox'],
         ];
         
         foreach ($fields as $field) {
@@ -258,6 +263,17 @@ class FDU_Admin {
             }
         }
         
+        // Auto-invalidate folder cache if destination path changed
+        $old_path = isset($old_settings['parent_folder_path']) ? $old_settings['parent_folder_path'] : '';
+        $new_path = isset($merged['parent_folder_path']) ? $merged['parent_folder_path'] : '';
+        
+        if ($old_path !== $new_path) {
+            $merged['parent_folder_id'] = 0;
+            if (class_exists('FDU_Logger')) {
+                FDU_Logger::log("Parent folder path changed ('{$old_path}' → '{$new_path}'). Cache invalidated.");
+            }
+        }
+        
         return $merged;
     }
     
@@ -283,6 +299,9 @@ class FDU_Admin {
                 );
                 if ($key === 'dest_relative_path') {
                     echo '<p class="description">مثال: wp-backups یا wp-backups/mysite (خالی = ریشه)</p>';
+                }
+                if ($key === 'parent_folder_path') {
+                    echo '<p class="description">پوشه‌ای که بکاپ‌ها در Files.ir در آن ذخیره می‌شوند. مثال: wp-backups یا wp-backups/site1 (خالی = ریشه). تغییر این مقدار، کش پوشه را خودکار باطل می‌کند.</p>';
                 }
                 break;
                 
