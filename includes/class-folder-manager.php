@@ -119,7 +119,8 @@ class FDU_Folder_Manager {
         ];
 
         if ($parent_id !== null) {
-            $params['parentIds[]'] = $parent_id;
+            // Per swagger: parentIds is an explode:false array — send as plain value
+            $params['parentIds'] = (string) $parent_id;
         }
 
         $url = add_query_arg($params, $this->api_base . '/drive/file-entries');
@@ -230,9 +231,10 @@ class FDU_Folder_Manager {
      */
     public function verify_folder_exists($folder_id) {
         // Lightweight check via list endpoint with ID filter
+        // Per swagger: parentIds is an explode:false array — send as plain value
         $url = add_query_arg([
-            'parentIds[]' => $folder_id,
-            'perPage'     => 1,
+            'parentIds' => (string) $folder_id,
+            'perPage'   => 1,
         ], $this->api_base . '/drive/file-entries');
 
         $response = wp_remote_get($url, [
