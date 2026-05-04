@@ -62,10 +62,6 @@ class FDU_Uploader {
                 $result = $this->upload_stream($file_path, $metadata);
                 break;
                 
-            case 'chunked':
-                $result = $this->upload_chunked($file_path, $metadata);
-                break;
-                
             default:
                 $result = $this->upload_simple($file_path, $metadata);
                 break;
@@ -103,7 +99,7 @@ class FDU_Uploader {
      * تعیین روش آپلود بر اساس حجم فایل
      * 
      * @param int $file_size
-     * @return string 'simple', 'stream', or 'chunked'
+     * @return string 'simple' or 'stream'
      */
     private function determine_upload_method($file_size) {
         // فایل‌های کوچک
@@ -111,12 +107,8 @@ class FDU_Uploader {
             return 'simple';
         }
         
-        // فایل‌های بزرگ
-        $method = isset($this->options['upload_method']) 
-            ? $this->options['upload_method'] 
-            : 'stream';
-        
-        return $method;
+        // فایل‌های بزرگ — همیشه stream (chunked از Files.ir پشتیبانی نمی‌شود)
+        return 'stream';
     }
     
     /**
@@ -265,169 +257,6 @@ class FDU_Uploader {
         return false;
     }
     
-    /**
-     * آپلود با chunked (برای فایل‌های خیلی بزرگ)
-     * 
-     * @param string $file_path
-     * @param array $metadata
-     * @return bool
-     */
-    private function upload_chunked($file_path, $metadata) {
-        if (!function_exists('curl_init')) {
-            FDU_Logger::error('cURL در دسترس نیست');
-            return false;
-        }
-        
-        $filename = basename($file_path);
-        $mime = $this->get_mime_type($file_path);
-        $file_size = filesize($file_path);
-        
-        // اندازه هر chunk
-        $chunk_size_mb = isset($this->options['chunk_size_mb']) && 
-                         intval($this->options['chunk_size_mb']) > 0
-            ? intval($this->options['chunk_size_mb'])
-            : 5;
-        
-        $chunk_size = $chunk_size_mb * 1024 * 1024;
-        $total_chunks = ceil($file_size / $chunk_size);
-        
-        FDU_Logger::log("Chunked Upload: {$total_chunks} قطعه × {$chunk_size_mb}MB");
-        
-        // ساخت فیلدهای اصلی
-        $base_fields = $this->prepare_fields($filename, $metadata);
-        
-        // باز کردن فایل
-        $fp = @fopen($file_path, 'rb');
-        if (!$fp) {
-            FDU_Logger::error('خطا در باز کردن فایل');
-            return false;
-        }
-        
-        $chunk_index = 0;
-        $uploaded_bytes = 0;
-        
-        while (!feof($fp)) {
-            $chunk_data = fread($fp, $chunk_size);
-            if ($chunk_data === false) {
-                break;
-            }
-            
-            $chunk_index++;
-            $current_chunk_size = strlen($chunk_data);
-            $uploaded_bytes += $current_chunk_size;
-            
-            FDU_Logger::log(sprintf(
-                "آپلود قطعه %d/%d (%s) - پیشرفت: %.1f%%",
-                $chunk_index,
-                $total_chunks,
-                $this->format_bytes($current_chunk_size),
-                ($uploaded_bytes / $file_size) * 100
-            ));
-            
-            // ارسال chunk
-            if (!$this->send_chunk($chunk_index, $total_chunks, $filename, $chunk_data, $mime, $base_fields)) {
-                fclose($fp);
-                FDU_Logger::error("خطا در آپلود قطعه {$chunk_index}");
-                return false;
-            }
-            
-            // تاخیر کوتاه بین chunks
-            if ($chunk_index < $total_chunks) {
-                usleep(100000); // 0.1 second
-            }
-        }
-        
-        fclose($fp);
-        
-        FDU_Logger::success("تمام {$total_chunks} قطعه با موفقیت آپلود شد");
-        return true;
-    }
-    
-    /**
-     * ارسال یک chunk
-     * 
-     * @param int $chunk_index
-     * @param int $total_chunks
-     * @param string $filename
-     * @param string $chunk_data
-     * @param string $mime
-     * @param array $base_fields
-     * @return bool
-     */
-    private function send_chunk($chunk_index, $total_chunks, $filename, $chunk_data, $mime, $base_fields) {
-        $boundary = '----WebKitFormBoundary' . uniqid();
-        $eol = "\r\n";
-        
-        $body = '';
-        
-        // فیلدهای اصلی فقط در chunk اول
-        if ($chunk_index === 1) {
-            foreach ($base_fields as $name => $value) {
-                $body .= "--{$boundary}{$eol}";
-                $body .= "Content-Disposition: form-data; name=\"{$name}\"{$eol}{$eol}";
-                $body .= "{$value}{$eol}";
-            }
-        }
-        
-        // متادیتای chunk
-        $body .= "--{$boundary}{$eol}";
-        $body .= "Content-Disposition: form-data; name=\"chunkIndex\"{$eol}{$eol}";
-        $body .= "{$chunk_index}{$eol}";
-        
-        $body .= "--{$boundary}{$eol}";
-        $body .= "Content-Disposition: form-data; name=\"totalChunks\"{$eol}{$eol}";
-        $body .= "{$total_chunks}{$eol}";
-        
-        $body .= "--{$boundary}{$eol}";
-        $body .= "Content-Disposition: form-data; name=\"originalFilename\"{$eol}{$eol}";
-        $body .= "{$filename}{$eol}";
-        
-        // خود chunk
-        $field_name = $this->options['multipart_field'];
-        $body .= "--{$boundary}{$eol}";
-        $body .= "Content-Disposition: form-data; name=\"{$field_name}\"; filename=\"{$filename}\"{$eol}";
-        $body .= "Content-Type: {$mime}{$eol}{$eol}";
-        $body .= $chunk_data . $eol;
-        $body .= "--{$boundary}--{$eol}";
-        
-        // آماده‌سازی هدرها
-        $headers = $this->prepare_curl_headers();
-        $headers[] = 'Content-Type: multipart/form-data; boundary=' . $boundary;
-        $headers[] = 'Expect:';
-        
-        $ch = curl_init();
-        
-        curl_setopt_array($ch, [
-            CURLOPT_URL => $this->options['endpoint_url'],
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => $body,
-            CURLOPT_HTTPHEADER => $headers,
-            CURLOPT_TIMEOUT => 600,
-            CURLOPT_CONNECTTIMEOUT => 30,
-            CURLOPT_SSL_VERIFYPEER => true,
-            CURLOPT_SSL_VERIFYHOST => 2,
-        ]);
-        
-        $response = curl_exec($ch);
-        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $error = curl_error($ch);
-        
-        curl_close($ch);
-        
-        if ($error) {
-            FDU_Logger::error("خطای cURL در قطعه {$chunk_index}: {$error}");
-            return false;
-        }
-        
-        if ($http_code < 200 || $http_code >= 300) {
-            FDU_Logger::error("خطای HTTP در قطعه {$chunk_index}: {$http_code}");
-            FDU_Logger::log('پاسخ: ' . substr($response, 0, 300));
-            return false;
-        }
-        
-        return true;
-    }
     
     /**
      * آماده‌سازی فیلدهای اضافی
