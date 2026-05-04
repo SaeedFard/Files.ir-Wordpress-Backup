@@ -221,8 +221,6 @@ class FDU_Admin {
             ['use_legacy_uploader', 'استفاده از API قدیمی (فقط برای rollback اضطراری)', 'checkbox'],
             
             // Legacy options (kept for compatibility, used only when use_legacy_uploader=1)
-            ['upload_method', 'روش آپلود قدیمی', 'select', ['stream'=>'Stream','chunk'=>'Chunked']],
-            ['chunk_size_mb', 'اندازه قطعه قدیمی (MB)', 'number'],
             ['compat_mode', 'حالت سازگاری (قدیمی)', 'checkbox'],
             ['force_manual_multipart', 'multipart دستی (قدیمی)', 'checkbox'],
         ];
