@@ -161,8 +161,6 @@ class FDU_Plugin {
         'use_mysqldump'       => 1,
         'compat_mode'         => 1,
         'force_manual_multipart'=> 1,
-        'chunk_size_mb'       => 5,
-        'upload_method'       => 'stream',
         'bg_key'              => '',
     ];
     
