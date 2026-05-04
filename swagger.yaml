@@ -12,6 +12,8 @@ tags:
     description: Authenticate requests to the API
   - name: Files and Folders
     description: FileEntry refers to either a file or folder on Files.ir
+  - name: Storage
+    description: Storage usage and limits for current user
   - name: Sharing
     description: Manage file entry collaborators
   - name: Starring
@@ -20,7 +22,48 @@ tags:
     description: Manage shareable links for file or folder
   - name: Workspaces
     description: Manage collaborative workspaces
+  - name: Tags
+    description: Manage tags and taggable relationships
 paths:
+  /user/space-usage:
+    get:
+      tags:
+        - Storage
+      summary: Get current user storage usage
+      description: Returns allowed storage, used storage, and remaining storage for the authenticated user. All values are in bytes.
+      operationId: spaceUsage
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  used:
+                    type: integer
+                    format: int64
+                    example: 3793236
+                    description: Used bytes
+                  available:
+                    type: integer
+                    format: int64
+                    example: 2147483648
+                    description: Total allowed bytes (null for unlimited)
+                    nullable: true
+                  remaining:
+                    type: integer
+                    format: int64
+                    example: 2143680412
+                    description: Remaining bytes (null for unlimited)
+                    nullable: true
+        '401':
+          $ref: '#/components/schemas/401-Response'
+        '403':
+          $ref: '#/components/schemas/403-Response'
   /uploads:
     post:
       tags:
@@ -41,6 +84,10 @@ paths:
                   type: integer
                   description: ID of folder where this file should be uploaded, `null` will upload to root
                   example: null
+                workspaceId:
+                  type: integer
+                  description: ID of workspace where this file should be uploaded. If omitted or `0`, upload goes to personal drive.
+                  example: 123
                 relativePath:
                   type: string
                   description: "Folders in the path provided here will be auto created, if they don't exist already. This is mainly useful when uploading a folder from browser. It should include original filename as well: <br> `/some/folders/here/file-name.jpg`"
@@ -151,6 +198,7 @@ paths:
       tags:
         - Files and Folders
       summary: Move entries to trash or delete permanently
+      description: Permanently deleting entries (`deleteForever=true`) only works for items that are already in trash.
       operationId: entriesDelete
       requestBody:
         required: true
@@ -165,7 +213,7 @@ paths:
                   items:
                     type: string
                 deleteForever:
-                  description: Whether entries should be deleted permantently, instead of being moved to trash
+                  description: Whether entries should be deleted permanently, instead of being moved to trash. Only applies to entries already in trash.
                   type: string
                   example: false
       responses:
@@ -1053,6 +1101,223 @@ paths:
           $ref: '#/components/schemas/401-Response'
         '403':
           $ref: '#/components/schemas/403-Response'
+  /taggable/{taggableType}/{taggableId}/list-tags:
+    get:
+      tags:
+        - Tags
+      summary: List tags for a specific item
+      description: Returns tags attached to a specific taggable model (for files, use taggableType=fileEntry).
+      operationId: listTaggableTags
+      parameters:
+        - name: taggableType
+          in: path
+          required: true
+          schema:
+            type: string
+            example: fileEntry
+        - name: taggableId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: type
+          in: query
+          description: Only return tags of specified type.
+          schema:
+            type: string
+        - name: notType
+          in: query
+          description: Exclude tags of specified type.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  tags:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Tag'
+        '401':
+          $ref: '#/components/schemas/401-Response'
+        '403':
+          $ref: '#/components/schemas/403-Response'
+  /taggable/attach-tag:
+    post:
+      tags:
+        - Tags
+      summary: Attach tag to items
+      description: 'Note: userId can be set only by admins; otherwise current user is used.'
+      operationId: attachTag
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - tagName
+                - taggableType
+                - taggableIds
+              properties:
+                tagName:
+                  type: string
+                  example: api tag test
+                tagType:
+                  type: string
+                  nullable: true
+                  example: custom
+                taggableType:
+                  type: string
+                  example: fileEntry
+                taggableIds:
+                  type: array
+                  items:
+                    type: integer
+                    format: int64
+                userId:
+                  type: integer
+                  format: int64
+                  nullable: true
+      responses:
+        '200':
+          description: Tag attached
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  tag:
+                    $ref: '#/components/schemas/Tag'
+        '401':
+          $ref: '#/components/schemas/401-Response'
+        '403':
+          $ref: '#/components/schemas/403-Response'
+        '422':
+          description: Invalid data specified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/422-Response'
+  /taggable/detach-tag:
+    post:
+      tags:
+        - Tags
+      summary: Detach tag from items
+      operationId: detachTag
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - tagId
+                - taggableType
+                - taggableIds
+              properties:
+                tagId:
+                  type: integer
+                  format: int64
+                taggableType:
+                  type: string
+                  example: fileEntry
+                taggableIds:
+                  type: array
+                  items:
+                    type: integer
+                    format: int64
+      responses:
+        '200':
+          description: Tag detached
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+        '401':
+          $ref: '#/components/schemas/401-Response'
+        '403':
+          $ref: '#/components/schemas/403-Response'
+        '422':
+          description: Invalid data specified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/422-Response'
+  /taggable/sync-tags:
+    post:
+      tags:
+        - Tags
+      summary: Sync tags on items
+      description: 'Note: userId can be set only by admins; otherwise current user is used.'
+      operationId: syncTags
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - taggableType
+                - taggableIds
+                - tagIds
+              properties:
+                taggableType:
+                  type: string
+                  example: fileEntry
+                taggableIds:
+                  type: array
+                  items:
+                    type: integer
+                    format: int64
+                tagIds:
+                  type: array
+                  items:
+                    type: integer
+                    format: int64
+                userId:
+                  type: integer
+                  format: int64
+                  nullable: true
+                detach:
+                  type: boolean
+                  nullable: true
+      responses:
+        '200':
+          description: Tags synced
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+        '401':
+          $ref: '#/components/schemas/401-Response'
+        '403':
+          $ref: '#/components/schemas/403-Response'
+        '422':
+          description: Invalid data specified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/422-Response'
 components:
   schemas:
     FileEntry:
@@ -1078,6 +1343,11 @@ components:
           format: int64
           example: 1
           description: Parent folder ID
+        workspace_id:
+          type: integer
+          format: int64
+          example: 0
+          description: Workspace ID this entry belongs to. `0` means personal drive.
         parent:
           $ref: '#/components/schemas/FileEntry'
         thumbnail:
