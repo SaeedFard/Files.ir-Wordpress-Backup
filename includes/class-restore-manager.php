@@ -618,8 +618,9 @@ class FDU_Restore_Manager {
             : 0;
         
         if ($parent_id > 0) {
-            // parentIds is an array parameter on the API
-            $params['parentIds[]'] = $parent_id;
+            // Per swagger: parentIds is an explode:false array — send as plain
+            // value (or comma-separated for multiple), NOT as parentIds[]=...
+            $params['parentIds'] = (string) $parent_id;
         }
         
         $url = add_query_arg($params, $api_url);
