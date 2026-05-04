@@ -597,6 +597,7 @@ class FDU_Restore_Manager {
     
     /**
      * دریافت لیست فایل‌ها از Files.ir
+     * فقط فایل‌های داخل پوشه‌ی parent_folder_id (در صورت تنظیم) رو برمی‌گردونه
      * 
      * @return array
      */
@@ -607,13 +608,23 @@ class FDU_Restore_Manager {
         
         $api_url = 'https://my.files.ir/api/v1/drive/file-entries';
         
-        // فیلتر برای پوشه مقصد
         $params = [
             'perPage' => 100,
-            'query' => '' // می‌تونیم فیلتر کنیم
         ];
         
+        // اگه پوشه‌ی مقصد تنظیم شده باشه، فقط داخل اون پوشه رو لیست بگیر
+        $parent_id = isset($this->options['parent_folder_id']) 
+            ? intval($this->options['parent_folder_id']) 
+            : 0;
+        
+        if ($parent_id > 0) {
+            // parentIds is an array parameter on the API
+            $params['parentIds[]'] = $parent_id;
+        }
+        
         $url = add_query_arg($params, $api_url);
+        
+        FDU_Logger::log('Fetching backup list: ' . $url);
         
         $response = wp_remote_get($url, [
             'headers' => [
@@ -638,15 +649,40 @@ class FDU_Restore_Manager {
         $body = wp_remote_retrieve_body($response);
         $data = json_decode($body, true);
         
-        if (!isset($data['data']) || !is_array($data['data'])) {
+        if (!is_array($data)) {
+            FDU_Logger::error('پاسخ نامعتبر از API');
             return [];
         }
         
-        // فیلتر کردن برای فایل‌های بکاپ
-        $backups = array_filter($data['data'], function($entry) {
-            $name = $entry['name'] ?? '';
+        // پاسخ ممکنه به یکی از این ساختارها باشه:
+        //   1) آرایه‌ی مستقیم: [{...}, {...}]
+        //   2) wrapped: { data: [{...}], ... }
+        //   3) wrapped paginator: { fileEntries: { data: [{...}] } }
+        $entries = null;
+        
+        if (isset($data['data']) && is_array($data['data'])) {
+            $entries = $data['data'];
+        } elseif (isset($data['fileEntries']['data']) && is_array($data['fileEntries']['data'])) {
+            $entries = $data['fileEntries']['data'];
+        } elseif (isset($data[0]) && is_array($data[0])) {
+            // direct array of entries
+            $entries = $data;
+        }
+        
+        if (!is_array($entries)) {
+            FDU_Logger::warning('ساختار پاسخ ناشناخته است');
+            return [];
+        }
+        
+        FDU_Logger::log('Total entries returned: ' . count($entries));
+        
+        // فیلتر کردن برای فایل‌های بکاپ بر اساس نام
+        $backups = array_filter($entries, function($entry) {
+            $name = isset($entry['name']) ? $entry['name'] : '';
             return preg_match('/^(db-|files-)\d{8}-\d{6}/', $name);
         });
+        
+        FDU_Logger::log('Backup files matched: ' . count($backups));
         
         return array_values($backups);
     }
